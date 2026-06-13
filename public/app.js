@@ -148,9 +148,11 @@ function renderAgents(reports) {
 }
 
 function renderNews(news) {
-  $("newsCount").textContent = news.length ? news.length + " titoli" : "";
+  const srcCount = new Set(news.map(n => n.source)).size;
+  $("newsCount").textContent = news.length ? `${news.length} titoli · ${srcCount} fonti` : "";
   $("newsList").innerHTML = news.map(n =>
-    `<li><span class="sc">▲${n.score}</span><a href="${n.url}" target="_blank" rel="noopener">${esc(n.title)}</a></li>`
+    `<li><span class="src-badge">${esc(n.source || "")}</span>` +
+    `<a href="${n.url}" target="_blank" rel="noopener">${esc(n.title)}</a></li>`
   ).join("");
 }
 
@@ -178,17 +180,54 @@ function esc(s) {
 }
 
 // ---- Settings modal ----
+let editSources = [];
+
+function renderSources() {
+  const box = $("sourcesList");
+  box.innerHTML = editSources.map((s, i) =>
+    `<div class="src-row ${s.enabled ? "on" : ""}">
+      <input type="checkbox" data-i="${i}" ${s.enabled ? "checked" : ""}>
+      <div class="si">
+        <div class="sname">${esc(s.name || "(senza nome)")}</div>
+        <div class="surl">${esc(s.url || "")}</div>
+      </div>
+      <button type="button" class="srm" data-rm="${i}" title="Rimuovi">✕</button>
+    </div>`
+  ).join("") || '<small style="color:var(--faint)">Nessuna fonte. Aggiungine una qui sotto.</small>';
+
+  box.querySelectorAll('input[type=checkbox]').forEach(cb => {
+    cb.addEventListener("change", () => {
+      editSources[+cb.dataset.i].enabled = cb.checked;
+      renderSources();
+    });
+  });
+  box.querySelectorAll('.srm').forEach(b => {
+    b.addEventListener("click", () => { editSources.splice(+b.dataset.rm, 1); renderSources(); });
+  });
+}
+
 function openSettings() {
   $("apiKey").value = "";
   $("apiKey").placeholder = cfg.api_key_set ? "(chiave salvata — lascia vuoto per non cambiarla)" : "sk-or-v1-...";
   $("defaultModel").value = cfg.default_model || "";
   $("interval").value = cfg.interval_minutes || 5;
-  $("newsLimit").value = cfg.news_limit || 40;
+  $("newsLimit").value = cfg.news_limit || 12;
   $("autoRun").checked = !!cfg.auto_run;
   $("assets").value = (cfg.assets || []).join("\n");
   $("agents").value = JSON.stringify(cfg.agents || [], null, 2);
+  editSources = JSON.parse(JSON.stringify(cfg.sources || []));
+  renderSources();
   $("settingsError").classList.add("hidden");
   $("settingsModal").classList.remove("hidden");
+}
+
+function addSource() {
+  const name = $("newSrcName").value.trim();
+  const url = $("newSrcUrl").value.trim();
+  if (!url) { $("newSrcUrl").focus(); return; }
+  editSources.push({ name: name || url.replace(/^https?:\/\//, "").split("/")[0], url, enabled: true });
+  $("newSrcName").value = ""; $("newSrcUrl").value = "";
+  renderSources();
 }
 function closeSettings() { $("settingsModal").classList.add("hidden"); }
 
@@ -206,10 +245,11 @@ async function saveSettings() {
   const payload = {
     default_model: $("defaultModel").value.trim(),
     interval_minutes: parseInt($("interval").value) || 5,
-    news_limit: parseInt($("newsLimit").value) || 40,
+    news_limit: parseInt($("newsLimit").value) || 12,
     auto_run: $("autoRun").checked,
     assets: $("assets").value.split("\n").map(s => s.trim()).filter(Boolean),
     agents: agents,
+    sources: editSources,
   };
   const k = $("apiKey").value.trim();
   if (k) payload.openrouter_api_key = k;
@@ -234,6 +274,8 @@ $("settingsBtn").addEventListener("click", openSettings);
 $("closeSettings").addEventListener("click", closeSettings);
 $("cancelSettings").addEventListener("click", closeSettings);
 $("saveSettings").addEventListener("click", saveSettings);
+$("addSrcBtn").addEventListener("click", addSource);
+$("newSrcUrl").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); addSource(); } });
 $("runNowBtn").addEventListener("click", runNow);
 $("settingsModal").addEventListener("click", (e) => { if (e.target.id === "settingsModal") closeSettings(); });
 

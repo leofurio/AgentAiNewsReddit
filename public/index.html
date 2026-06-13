@@ -25,7 +25,7 @@
     </div>
     <div>
       <h1>Agent<span>AI</span> <span class="sub-brand">News→Market</span></h1>
-      <p class="tagline">Agenti OpenRouter leggono r/worldnews e stimano rialzi e ribassi</p>
+      <p class="tagline">Agenti OpenRouter leggono news da CNBC, Bloomberg, Reddit e altre fonti e stimano rialzi e ribassi</p>
     </div>
   </div>
 
@@ -145,14 +145,24 @@
       </div>
 
       <div class="row">
-        <label>Numero di news da leggere
-          <input id="newsLimit" type="number" min="5" max="100" value="40">
+        <label>News per fonte
+          <input id="newsLimit" type="number" min="3" max="50" value="12">
         </label>
         <label class="check">
           <input id="autoRun" type="checkbox" checked>
           <span>Analisi automatica ogni intervallo</span>
         </label>
       </div>
+
+      <label>Fonti news (feed RSS/Atom o Reddit)
+        <div id="sourcesList" class="src-list"></div>
+        <div class="src-add">
+          <input id="newSrcName" type="text" placeholder="Nome (es. Reuters)">
+          <input id="newSrcUrl" type="text" placeholder="https://…/feed.rss">
+          <button id="addSrcBtn" type="button" class="btn">+ Aggiungi</button>
+        </div>
+        <small>Spunta le fonti da leggere. Tutte quelle elencate sono già testate e funzionanti.</small>
+      </label>
 
       <label>Asset / indici da valutare (uno per riga)
         <textarea id="assets" rows="6"></textarea>

@@ -14,6 +14,7 @@ ATTENZIONE: strumento a scopo di studio/ricerca. NON e' consulenza finanziaria.
 
 import json
 import os
+import re
 import ssl
 import sys
 import threading
@@ -51,9 +52,30 @@ DEFAULT_CONFIG = {
     "openrouter_api_key": os.environ.get("OPENROUTER_API_KEY", ""),
     "default_model": "openai/gpt-4o-mini",
     "interval_minutes": 5,
-    "news_limit": 40,
+    "news_limit": 12,          # titoli letti PER FONTE
     "auto_run": True,
-    "subreddit_url": "https://www.reddit.com/r/worldnews.json",
+    "subreddit_url": "https://www.reddit.com/r/worldnews.json",  # legacy (vedi 'sources')
+    # Fonti testate e funzionanti (feed RSS/Atom o Reddit). enabled=True => usata.
+    "sources": [
+        {"name": "Reddit r/worldnews", "url": "https://www.reddit.com/r/worldnews.json", "enabled": True},
+        {"name": "CNBC Markets",       "url": "https://www.cnbc.com/id/10000664/device/rss/rss.html", "enabled": True},
+        {"name": "CNBC Economy",       "url": "https://www.cnbc.com/id/20910258/device/rss/rss.html", "enabled": True},
+        {"name": "Bloomberg Markets",  "url": "https://feeds.bloomberg.com/markets/news.rss", "enabled": True},
+        {"name": "Yahoo Finance",      "url": "https://finance.yahoo.com/news/rssindex", "enabled": True},
+        {"name": "ZeroHedge",          "url": "https://feeds.feedburner.com/zerohedge/feed", "enabled": True},
+        {"name": "MarketWatch Top",    "url": "http://feeds.marketwatch.com/marketwatch/topstories/", "enabled": False},
+        {"name": "WSJ Markets",        "url": "https://feeds.a.dj.com/rss/RSSMarketsMain.xml", "enabled": False},
+        {"name": "WSJ World",          "url": "https://feeds.a.dj.com/rss/RSSWorldNews.xml", "enabled": False},
+        {"name": "BBC Business",       "url": "https://feeds.bbci.co.uk/news/business/rss.xml", "enabled": False},
+        {"name": "Guardian Business",  "url": "https://www.theguardian.com/uk/business/rss", "enabled": False},
+        {"name": "NYT Business",       "url": "https://rss.nytimes.com/services/xml/rss/nyt/Business.xml", "enabled": False},
+        {"name": "Investing.com",      "url": "https://www.investing.com/rss/news.rss", "enabled": False},
+        {"name": "FT Home",            "url": "https://www.ft.com/rss/home", "enabled": False},
+        {"name": "ForexLive",          "url": "https://www.forexlive.com/feed/news/", "enabled": False},
+        {"name": "CoinDesk (crypto)",  "url": "https://www.coindesk.com/arc/outboundfeeds/rss/", "enabled": False},
+        {"name": "CNBC World",         "url": "https://www.cnbc.com/id/100727362/device/rss/rss.html", "enabled": False},
+        {"name": "Reddit r/economics", "url": "https://www.reddit.com/r/economics/.rss", "enabled": False},
+    ],
     "assets": [
         "S&P 500", "Nasdaq 100", "Dow Jones", "FTSE MIB", "EURO STOXX 50",
         "DAX", "Brent Crude Oil", "Gold (XAU/USD)", "Bitcoin", "EUR/USD",
@@ -138,9 +160,13 @@ def public_config():
 
 
 # ---------------------------------------------------------------------------
-# Fetch Reddit
+# Fetch multi-fonte (RSS/Atom + Reddit)
 # ---------------------------------------------------------------------------
-def _http_get(url, accept, timeout=30):
+MAX_HEADLINES = 70   # tetto totale di titoli passati agli agenti (controlla i token)
+FEED_ACCEPT = "application/rss+xml, application/atom+xml, application/xml;q=0.9, */*;q=0.8"
+
+
+def _http_bytes(url, accept, timeout=25):
     headers = {
         "User-Agent": REDDIT_UA,
         "Accept": accept,
@@ -151,7 +177,11 @@ def _http_get(url, accept, timeout=30):
     req = urllib.request.Request(url, headers=headers)
     ctx = ssl.create_default_context()
     with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:
-        return resp.read().decode("utf-8", "replace")
+        return resp.read()
+
+
+def _http_get(url, accept, timeout=30):
+    return _http_bytes(url, accept, timeout).decode("utf-8", "replace")
 
 
 def _domain_of(url):
@@ -159,6 +189,17 @@ def _domain_of(url):
         return url.split("//", 1)[-1].split("/", 1)[0]
     except Exception:
         return ""
+
+
+def _local(tag):
+    return tag.rsplit("}", 1)[-1].lower()
+
+
+_TAG_RE = re.compile(r"<[^>]+>")
+
+
+def _clean(text):
+    return _TAG_RE.sub("", " ".join((text or "").split())).strip()
 
 
 def _rss_url_from(url):
@@ -169,7 +210,7 @@ def _rss_url_from(url):
     return base + "/.rss"
 
 
-def _fetch_json(url, limit):
+def _fetch_json(url, limit, source_name):
     sep = "&" if "?" in url else "?"
     raw = _http_get(f"{url}{sep}limit={limit}", "application/json")
     data = json.loads(raw)
@@ -185,51 +226,99 @@ def _fetch_json(url, limit):
             "url": "https://www.reddit.com" + d.get("permalink", ""),
             "created_utc": d.get("created_utc"),
             "domain": d.get("domain", ""),
-            "source": "json",
+            "source": source_name,
         })
     return posts
 
 
-def _fetch_rss(url, limit):
-    """Fallback: il feed Atom di Reddit, parsato con la stdlib."""
-    sep = "&" if "?" in url else "?"
-    raw = _http_get(f"{url}{sep}limit={limit}",
-                    "application/atom+xml, application/xml;q=0.9, */*;q=0.8")
-    ns = {"a": "http://www.w3.org/2005/Atom"}
-    root = ET.fromstring(raw)
+def _parse_feed(raw_bytes, source_name, limit):
+    """Parser generico RSS 2.0 + Atom (namespace ignorati)."""
+    root = ET.fromstring(raw_bytes)
     posts = []
-    for entry in root.findall("a:entry", ns):
-        t = entry.find("a:title", ns)
-        link = entry.find("a:link", ns)
-        title = (t.text or "").strip() if t is not None else ""
-        href = link.get("href") if link is not None else ""
+    for el in root.iter():
+        if _local(el.tag) not in ("item", "entry"):
+            continue
+        title = ""
+        href = ""
+        for ch in el:
+            lt = _local(ch.tag)
+            if lt == "title" and not title:
+                title = _clean(ch.text)
+            elif lt == "link" and not href:
+                href = ch.get("href") or _clean(ch.text)
         if not title:
             continue
         posts.append({
-            "title": title,
-            "score": 0,
-            "comments": 0,
-            "url": href,
-            "created_utc": None,
-            "domain": _domain_of(href),
-            "source": "rss",
+            "title": title, "score": 0, "comments": 0, "url": href,
+            "created_utc": None, "domain": _domain_of(href), "source": source_name,
         })
         if len(posts) >= limit:
             break
     return posts
 
 
-def fetch_reddit():
-    url = config.get("subreddit_url") or DEFAULT_CONFIG["subreddit_url"]
-    limit = int(config.get("news_limit", 40))
-    try:
-        posts = _fetch_json(url, limit)
-        if posts:
-            return posts
-        raise RuntimeError("risposta JSON vuota")
-    except Exception as e:
-        log(f"Endpoint .json non disponibile ({e}); uso il feed RSS di Reddit.")
-        return _fetch_rss(_rss_url_from(url), limit)
+def fetch_one(source, limit):
+    """Scarica una singola fonte. Reddit .json prova JSON poi ripiega su RSS."""
+    url = source.get("url", "")
+    name = source.get("name") or _domain_of(url)
+    if "reddit.com" in url and url.split("?", 1)[0].rstrip("/").endswith(".json"):
+        try:
+            posts = _fetch_json(url, limit, name)
+            if posts:
+                return posts
+        except Exception as e:
+            log(f"  {name}: .json bloccato ({e}); provo RSS")
+        url = _rss_url_from(url)
+    raw = _http_bytes(url, FEED_ACCEPT, 25)
+    return _parse_feed(raw, name, limit)
+
+
+def _active_sources():
+    srcs = config.get("sources")
+    if not srcs:  # retro-compatibilità con la vecchia config a fonte singola
+        srcs = [{"name": "Reddit", "url": config.get("subreddit_url",
+                 DEFAULT_CONFIG["subreddit_url"]), "enabled": True}]
+    return [s for s in srcs if s.get("enabled", True) and s.get("url")]
+
+
+def fetch_news():
+    sources = _active_sources()
+    if not sources:
+        raise RuntimeError("Nessuna fonte attiva: abilita almeno una fonte nelle impostazioni.")
+    per = max(3, int(config.get("news_limit", 12)))
+    lists = []
+    errors = []
+    for src in sources:
+        try:
+            posts = fetch_one(src, per)
+            lists.append(posts)
+            log(f"  {src['name']}: {len(posts)} titoli")
+        except Exception as e:
+            errors.append(src.get("name", "?"))
+            log(f"  {src.get('name','?')}: errore ({e})")
+    # round-robin tra le fonti per mescolare le testate
+    merged = []
+    i = 0
+    while True:
+        added = False
+        for lst in lists:
+            if i < len(lst):
+                merged.append(lst[i])
+                added = True
+        if not added:
+            break
+        i += 1
+    # dedup per titolo normalizzato
+    seen = set()
+    deduped = []
+    for p in merged:
+        k = re.sub(r"\W+", " ", p["title"].lower()).strip()[:90]
+        if k and k not in seen:
+            seen.add(k)
+            deduped.append(p)
+    if not deduped:
+        raise RuntimeError("Nessuna fonte raggiungibile: " + ", ".join(errors))
+    return deduped[:MAX_HEADLINES]
 
 
 # ---------------------------------------------------------------------------
@@ -303,13 +392,14 @@ def extract_json(text):
 def run_extractor(news):
     """Agente 'estrattore': filtra le news rilevanti per i mercati."""
     model = config.get("default_model")
-    headlines = "\n".join(f"- {p['title']}" for p in news[:int(config.get('news_limit', 40))])
+    headlines = "\n".join(f"- [{p.get('source','?')}] {p['title']}" for p in news[:MAX_HEADLINES])
     system = (
         "Sei un analista finanziario che filtra notizie. Rispondi SOLO con JSON valido, "
         "nessun testo extra."
     )
     user = (
-        "Ecco i titoli da r/worldnews:\n\n" + headlines +
+        "Ecco titoli da varie testate finanziarie e di attualità (la testata è tra parentesi quadre):\n\n"
+        + headlines +
         "\n\nSeleziona SOLO le notizie potenzialmente rilevanti per i mercati finanziari "
         "(geopolitica, energia, banche centrali, commercio, materie prime, tecnologia, ecc.). "
         "Rispondi con questo JSON:\n"
@@ -461,9 +551,10 @@ def do_run():
         with _lock:
             state["status"] = "running"
             state["last_error"] = None
-        log("Scarico le news da Reddit...")
-        news = fetch_reddit()
-        log(f"Ricevute {len(news)} news. Estrazione notizie rilevanti...")
+        srcs = _active_sources()
+        log(f"Scarico le news da {len(srcs)} fonti...")
+        news = fetch_news()
+        log(f"Totale {len(news)} titoli (deduplicati). Estrazione notizie rilevanti...")
 
         macro_summary, relevant = run_extractor(news)
         log(f"Notizie rilevanti: {len(relevant)}. Interrogo {len(config['agents'])} agenti...")
@@ -483,7 +574,7 @@ def do_run():
         consensus = aggregate(reports, config["assets"])
 
         with _lock:
-            state["news"] = news[:int(config.get("news_limit", 40))]
+            state["news"] = news
             state["macro_summary"] = macro_summary
             state["relevant_news"] = relevant
             state["agent_reports"] = reports
@@ -657,7 +748,7 @@ class Handler(BaseHTTPRequestHandler):
     def handle_config(self, payload):
         global config
         allowed = {"default_model", "interval_minutes", "news_limit", "auto_run",
-                   "subreddit_url", "assets", "agents"}
+                   "subreddit_url", "assets", "agents", "sources"}
         for k in allowed:
             if k in payload:
                 config[k] = payload[k]

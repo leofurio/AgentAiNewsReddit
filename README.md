@@ -43,9 +43,24 @@ Alla prima apertura:
 | API key | la tua chiave OpenRouter (salvata solo in `data/config.json` sul tuo PC) |
 | Modello di default | es. `openai/gpt-4o-mini`, `anthropic/claude-3.5-haiku`, `google/gemini-2.0-flash-001` — lista su https://openrouter.ai/models |
 | Intervallo | minuti tra un'analisi e l'altra (default 5) |
-| News da leggere | quanti titoli passare agli agenti |
+| News per fonte | quanti titoli leggere da ciascuna fonte |
+| **Fonti news** | checklist di feed (RSS/Atom o Reddit) da leggere; puoi aggiungerne/rimuoverne |
 | Asset / indici | uno per riga (es. `S&P 500`, `FTSE MIB`, `Bitcoin`…) |
 | Agenti | lista JSON: ogni agente ha `name`, `model` (vuoto = default), `persona`. Metti modelli diversi per far "discutere" più AI. |
+
+### Fonti incluse (testate e funzionanti)
+
+Attive di default: **Reddit r/worldnews**, **CNBC Markets**, **CNBC Economy**,
+**Bloomberg Markets**, **Yahoo Finance**, **ZeroHedge**.
+
+Disponibili (da attivare con un click): MarketWatch, WSJ Markets/World, BBC Business,
+The Guardian Business, NYT Business, Investing.com, FT, ForexLive, CoinDesk, CNBC World,
+Reddit r/economics.
+
+L'app legge tutte le fonti attive, **unisce e deduplica** i titoli, li mescola e li tagga
+con la testata di origine. Reddit `.json` viene provato per primo e, se bloccato (403),
+ripiega automaticamente sul feed RSS. Per aggiungere una fonte basta incollare l'URL di un
+feed RSS/Atom nelle impostazioni.
 
 Esempio di agente con modello specifico:
 
