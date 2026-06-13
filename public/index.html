@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AgentAI · Market Sentiment dalle news</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<div class="bg-glow"></div>
+
+<header>
+  <div class="brand">
+    <div class="logo-mark" aria-hidden="true">
+      <svg viewBox="0 0 32 32" width="26" height="26">
+        <defs><linearGradient id="lg" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0" stop-color="#22d3ee"/><stop offset="1" stop-color="#a855f7"/>
+        </linearGradient></defs>
+        <path d="M3 22 L11 13 L17 18 L29 5" fill="none" stroke="url(#lg)" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+        <circle cx="29" cy="5" r="2.6" fill="#22d3ee"/>
+      </svg>
+    </div>
+    <div>
+      <h1>Agent<span>AI</span> <span class="sub-brand">News→Market</span></h1>
+      <p class="tagline">Agenti OpenRouter leggono r/worldnews e stimano rialzi e ribassi</p>
+    </div>
+  </div>
+
+  <div class="head-right">
+    <div class="status-pill" id="statusPill">
+      <span id="statusDot" class="dot"></span>
+      <span id="statusText">Avvio…</span>
+    </div>
+    <div class="status-times">
+      <span id="lastRun">Ultima: —</span>
+      <span class="divider">·</span>
+      <span id="nextRun">Prossima: —</span>
+    </div>
+    <div class="controls">
+      <button id="runNowBtn" class="btn btn-primary">▶ Analizza ora</button>
+      <button id="settingsBtn" class="btn">⚙ Impostazioni</button>
+    </div>
+  </div>
+  <div class="head-progress"><div id="headProgress"></div></div>
+</header>
+
+<div id="banner" class="banner hidden"></div>
+
+<main>
+  <!-- HERO sentiment -->
+  <section class="hero">
+    <div class="hero-left">
+      <div class="hero-label">Bias di mercato aggregato</div>
+      <div class="hero-bias" id="heroBias">
+        <span class="hero-bias-dot" id="heroBiasDot"></span>
+        <span id="heroBiasLabel">In attesa</span>
+      </div>
+      <div class="hero-meta" id="heroMeta">Nessuna analisi ancora</div>
+    </div>
+    <div class="hero-right">
+      <div class="hero-stats">
+        <div class="hstat up"><span class="hnum" id="heroUp">0</span><span class="hlbl">Rialzo</span></div>
+        <div class="hstat neutral"><span class="hnum" id="heroNeutral">0</span><span class="hlbl">Neutro</span></div>
+        <div class="hstat down"><span class="hnum" id="heroDown">0</span><span class="hlbl">Ribasso</span></div>
+      </div>
+      <div class="hero-bar" id="heroBar">
+        <div class="seg up" id="segUp"></div>
+        <div class="seg neutral" id="segNeutral"></div>
+        <div class="seg down" id="segDown"></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <div class="panel-head">
+      <h2><span class="ico">🎯</span> Consenso degli agenti per asset</h2>
+      <span class="badge-count" id="assetCount"></span>
+    </div>
+    <div id="consensusGrid" class="grid"></div>
+    <div id="consensusEmpty" class="empty">
+      <div class="empty-ico">📊</div>
+      <p>Nessuna analisi ancora.</p>
+      <small>Premi <b>“Analizza ora”</b> o aspetta il ciclo automatico.</small>
+    </div>
+  </section>
+
+  <div class="two-col">
+    <section class="panel">
+      <div class="panel-head"><h2><span class="ico">🌍</span> Contesto macro &amp; news rilevanti</h2></div>
+      <p id="macroSummary" class="macro">—</p>
+      <ul id="relevantNews" class="rel-list"></ul>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head"><h2><span class="ico">🤖</span> Pareri degli agenti</h2></div>
+      <div id="agentReports" class="agents"></div>
+    </section>
+  </div>
+
+  <section class="panel">
+    <div class="panel-head">
+      <h2><span class="ico">📰</span> News analizzate</h2>
+      <span class="badge-count" id="newsCount"></span>
+    </div>
+    <ul id="newsList" class="news-list"></ul>
+  </section>
+
+  <section class="panel">
+    <div class="panel-head"><h2><span class="ico">🛠️</span> Log del motore</h2></div>
+    <pre id="logs" class="logs"></pre>
+  </section>
+</main>
+
+<footer>
+  <p>⚠️ <strong>Strumento a scopo di studio.</strong> Le previsioni sono generate da modelli linguistici
+  su titoli di news e <strong>non costituiscono consulenza finanziaria</strong>. Nessuna garanzia di accuratezza.</p>
+</footer>
+
+<!-- Settings modal -->
+<div id="settingsModal" class="modal hidden">
+  <div class="modal-card">
+    <div class="modal-head">
+      <h2>⚙ Impostazioni</h2>
+      <button id="closeSettings" class="btn-icon">✕</button>
+    </div>
+    <div class="modal-body">
+      <label>OpenRouter API key
+        <input id="apiKey" type="password" placeholder="sk-or-v1-..." autocomplete="off">
+        <small>Ottienila su <a href="https://openrouter.ai/keys" target="_blank">openrouter.ai/keys</a>.
+        Resta salvata solo sul tuo PC (data/config.json).</small>
+      </label>
+
+      <div class="row">
+        <label>Modello di default
+          <input id="defaultModel" type="text" placeholder="openai/gpt-4o-mini">
+          <small>Es: <code>openai/gpt-4o-mini</code>, <code>anthropic/claude-3.5-haiku</code>,
+          <code>google/gemini-2.0-flash-001</code> · <a href="https://openrouter.ai/models" target="_blank">tutti i modelli</a></small>
+        </label>
+        <label>Intervallo (minuti)
+          <input id="interval" type="number" min="1" value="5">
+        </label>
+      </div>
+
+      <div class="row">
+        <label>Numero di news da leggere
+          <input id="newsLimit" type="number" min="5" max="100" value="40">
+        </label>
+        <label class="check">
+          <input id="autoRun" type="checkbox" checked>
+          <span>Analisi automatica ogni intervallo</span>
+        </label>
+      </div>
+
+      <label>Asset / indici da valutare (uno per riga)
+        <textarea id="assets" rows="6"></textarea>
+      </label>
+
+      <label>Agenti (JSON): nome, model (vuoto = default), persona
+        <textarea id="agents" rows="8" class="mono"></textarea>
+        <small>Ogni agente è una voce del panel. Puoi mettere modelli diversi per “far discutere” più AI.</small>
+      </label>
+
+      <div id="settingsError" class="form-error hidden"></div>
+    </div>
+    <div class="modal-foot">
+      <button id="saveSettings" class="btn btn-primary">💾 Salva</button>
+      <button id="cancelSettings" class="btn">Annulla</button>
+    </div>
+  </div>
+</div>
+
+<script src="/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,17 @@
+# Dati locali e SEGRETI — NON committare: data/config.json contiene la API key!
+data/
+
+# Cache Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Log
+*.log
+
+# Config locale dell'editor / harness
+.claude/
+
+# OS
+Thumbs.db
+.DS_Store
