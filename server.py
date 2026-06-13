@@ -12,6 +12,7 @@ Avvio:  python server.py    ->  http://localhost:8765
 ATTENZIONE: strumento a scopo di studio/ricerca. NON e' consulenza finanziaria.
 """
 
+import ast
 import json
 import os
 import re
@@ -370,20 +371,83 @@ def call_openrouter(model, system_prompt, user_prompt, temperature=0.4, max_toke
     raise RuntimeError(last_err or "Errore sconosciuto OpenRouter")
 
 
+def _repair_json(s):
+    """Ripara il JSON 'sporco' dei modelli: virgolette interne non-escaped,
+    a-capo/tab dentro le stringhe, ecc. Scansione a stati carattere per carattere."""
+    out = []
+    in_str = False
+    esc = False
+    n = len(s)
+    for i, c in enumerate(s):
+        if in_str:
+            if esc:
+                out.append(c)
+                esc = False
+            elif c == "\\":
+                out.append(c)
+                esc = True
+            elif c == '"':
+                # è davvero fine stringa? guarda il prossimo char non-spazio
+                j = i + 1
+                while j < n and s[j] in " \t\r\n":
+                    j += 1
+                nxt = s[j] if j < n else ""
+                if nxt in ",}]:" or nxt == "":
+                    out.append('"')
+                    in_str = False
+                else:
+                    out.append('\\"')  # virgoletta interna -> escape
+            elif c == "\n":
+                out.append("\\n")
+            elif c == "\r":
+                out.append("\\r")
+            elif c == "\t":
+                out.append("\\t")
+            else:
+                out.append(c)
+        else:
+            out.append(c)
+            if c == '"':
+                in_str = True
+    return "".join(out)
+
+
 def extract_json(text):
-    """Estrae il primo oggetto JSON da una risposta del modello."""
+    """Estrae il primo oggetto JSON da una risposta del modello, riparandolo se serve."""
     if not text:
         raise ValueError("Risposta vuota")
     t = text.strip()
-    if t.startswith("```"):
-        t = t.strip("`")
-        if t.lower().startswith("json"):
-            t = t[4:]
+    # togli eventuali fence ```json ... ```
+    t = re.sub(r"^```[a-zA-Z]*\s*", "", t)
+    t = re.sub(r"\s*```$", "", t).strip()
     start = t.find("{")
     end = t.rfind("}")
     if start == -1 or end == -1 or end < start:
         raise ValueError("Nessun JSON trovato nella risposta")
-    return json.loads(t[start:end + 1])
+    blob = t[start:end + 1]
+    cleaned = re.sub(r",(\s*[}\]])", r"\1", blob)  # togli virgole finali
+    # 1-2) tentativo diretto, poi senza virgole finali
+    for cand in (blob, cleaned):
+        try:
+            return json.loads(cand)
+        except json.JSONDecodeError:
+            pass
+    # 3) ripara virgolette/newline interni alle stringhe
+    try:
+        return json.loads(re.sub(r",(\s*[}\]])", r"\1", _repair_json(cleaned)))
+    except json.JSONDecodeError:
+        pass
+    # 4) il modello ha risposto con un dict stile Python (apici singoli, True/False/None)
+    py = re.sub(r"\bnull\b", "None",
+                re.sub(r"\bfalse\b", "False",
+                       re.sub(r"\btrue\b", "True", cleaned)))
+    try:
+        val = ast.literal_eval(py)
+        if isinstance(val, dict):
+            return val
+    except Exception:
+        pass
+    raise ValueError("JSON non interpretabile dalla risposta del modello")
 
 
 # ---------------------------------------------------------------------------
@@ -394,8 +458,10 @@ def run_extractor(news):
     model = config.get("default_model")
     headlines = "\n".join(f"- [{p.get('source','?')}] {p['title']}" for p in news[:MAX_HEADLINES])
     system = (
-        "Sei un analista finanziario che filtra notizie. Rispondi SOLO con JSON valido, "
-        "nessun testo extra."
+        "Sei un analista finanziario che filtra notizie. Restituisci ESCLUSIVAMENTE un oggetto "
+        "JSON valido: usa le virgolette doppie per chiavi e valori. Se devi citare qualcosa "
+        "dentro un valore, usa apici singoli. Niente testo prima o dopo il JSON, niente a-capo "
+        "dentro le stringhe."
     )
     user = (
         "Ecco titoli da varie testate finanziarie e di attualità (la testata è tra parentesi quadre):\n\n"
@@ -406,13 +472,16 @@ def run_extractor(news):
         '{"macro_summary":"2-3 frasi sul contesto di mercato in italiano",'
         '"relevant":[{"title":"titolo","why":"perche rilevante","impact":"high|medium|low"}]}'
     )
-    try:
-        raw = call_openrouter(model, system, user, temperature=0.3, max_tokens=1200)
-        data = extract_json(raw)
-        return data.get("macro_summary", ""), data.get("relevant", [])
-    except Exception as e:
-        log(f"Estrattore fallito ({e}); uso i titoli grezzi.")
-        return "", [{"title": p["title"], "why": "", "impact": "medium"} for p in news[:12]]
+    for attempt in range(2):
+        try:
+            raw = call_openrouter(model, system, user,
+                                  temperature=(0.3 if attempt == 0 else 0.1), max_tokens=1200)
+            data = extract_json(raw)
+            return data.get("macro_summary", ""), data.get("relevant", [])
+        except Exception as e:
+            last = e
+    log(f"Estrattore fallito ({last}); uso i titoli grezzi.")
+    return "", [{"title": p["title"], "why": "", "impact": "medium"} for p in news[:12]]
 
 
 def run_analyst(agent, macro_summary, relevant, assets):
@@ -428,7 +497,9 @@ def run_analyst(agent, macro_summary, relevant, assets):
     system = (
         persona + "\n\n"
         "Analizzi notizie e dai una previsione direzionale di BREVE termine (giorni) su asset finanziari. "
-        "Rispondi SOLO con JSON valido, in italiano, senza testo extra. "
+        "Restituisci ESCLUSIVAMENTE un oggetto JSON valido, in italiano, senza testo prima o dopo. "
+        "Usa le virgolette doppie per chiavi e valori; per citare qualcosa dentro un valore usa "
+        "apici singoli. Niente a-capo dentro le stringhe: motivazioni brevi su una sola riga. "
         "Sii prudente: usa 'neutral' quando le notizie non sono chiaramente rilevanti."
     )
     user = (
@@ -441,8 +512,18 @@ def run_analyst(agent, macro_summary, relevant, assets):
         '"assets":[{"asset":"nome esatto","direction":"up|down|neutral",'
         '"confidence":0-100,"rationale":"motivazione breve"}]}'
     )
-    raw = call_openrouter(model, system, user, temperature=0.5, max_tokens=1800)
-    data = extract_json(raw)
+    data = None
+    last_err = None
+    for attempt in range(2):
+        try:
+            raw = call_openrouter(model, system, user,
+                                  temperature=(0.35 if attempt == 0 else 0.1), max_tokens=2000)
+            data = extract_json(raw)
+            break
+        except Exception as e:
+            last_err = e
+    if data is None:
+        raise RuntimeError(f"risposta non in JSON dopo 2 tentativi ({last_err})")
     # normalizza
     votes = {}
     for a in data.get("assets", []):
