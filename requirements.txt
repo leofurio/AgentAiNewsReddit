@@ -1,0 +1,2 @@
+# Nessuna dipendenza esterna: il progetto usa solo la libreria standard di Python.
+# Questo file vuoto indica a Vercel che il runtime e' Python.
