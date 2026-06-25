@@ -14,6 +14,10 @@ from http.server import BaseHTTPRequestHandler
 
 # _core.py vive accanto a questo file: rendilo importabile a runtime.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# Forza la modalita' serverless PRIMA di importare _core: queste funzioni girano solo
+# su Vercel, e non possiamo affidarci alla variabile VERCEL (non sempre presente a runtime).
+# Senza questo, _core userebbe i tempi "locali" (sequenziale, timeout 90s) -> 504 su Vercel.
+os.environ.setdefault("AGENT_SERVERLESS", "1")
 import _core  # noqa: E402,F401  (riesportato per comodita')
 
 

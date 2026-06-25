@@ -65,6 +65,10 @@ function render(s) {
   } else if (s.status === "error" && s.last_error) {
     banner.className = "banner error";
     banner.textContent = "Errore: " + s.last_error;
+  } else if (s.last_error) {
+    // analisi completata parzialmente (es. timeout agenti su serverless)
+    banner.className = "banner";
+    banner.textContent = "⚠️ " + s.last_error;
   } else {
     banner.className = "banner hidden";
   }
