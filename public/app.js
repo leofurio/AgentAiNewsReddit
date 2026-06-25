@@ -17,17 +17,37 @@ const BIAS_LABEL = { up: "RISK-ON", down: "RISK-OFF", neutral: "MISTO" };
 
 let intervalMin = 5;
 
+// Su serverless (Vercel) ogni richiesta può colpire un'istanza diversa: il polling di
+// /api/state può cadere su un'istanza "fredda" senza dati in /tmp e restituire uno stato
+// vuoto. In quel caso NON sovrascriviamo i risultati (e i log) già mostrati.
+let lastGood = null;
+function hasData(s) {
+  return !!(s && (s.last_run ||
+    (s.consensus && s.consensus.length) ||
+    (s.logs && s.logs.length) ||
+    (s.news && s.news.length)));
+}
+
 async function fetchState() {
   try {
     const r = await fetch("/api/state");
     const s = await r.json();
-    render(s);
+    let view = s;
+    if (!hasData(s) && hasData(lastGood)) {
+      // mantieni l'ultima analisi visibile, ma aggiorna la config (es. model_locked)
+      view = Object.assign({}, lastGood, { config: s.config || lastGood.config });
+    }
+    render(view);
   } catch (e) {
     $("statusText").textContent = "Server non raggiungibile";
   }
 }
 
 function render(s) {
+  if (hasData(s)) {               // memorizza l'ultima analisi non vuota
+    lastGood = s;
+    try { localStorage.setItem("lastState", JSON.stringify(s)); } catch (e) {}
+  }
   cfg = s.config;
   intervalMin = (cfg && cfg.interval_minutes) || 5;
   // status
@@ -292,6 +312,13 @@ $("addSrcBtn").addEventListener("click", addSource);
 $("newSrcUrl").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); addSource(); } });
 $("runNowBtn").addEventListener("click", runNow);
 $("settingsModal").addEventListener("click", (e) => { if (e.target.id === "settingsModal") closeSettings(); });
+
+// All'avvio mostra subito l'ultima analisi salvata in locale (utile su serverless,
+// dove un refresh può colpire un'istanza fredda senza stato), poi aggiorna dal server.
+try {
+  const cached = JSON.parse(localStorage.getItem("lastState") || "null");
+  if (hasData(cached)) render(cached);
+} catch (e) {}
 
 fetchState();
 setInterval(fetchState, 4000);
