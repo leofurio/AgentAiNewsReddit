@@ -48,7 +48,11 @@ for _stream in (sys.stdout, sys.stderr):
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PUBLIC_DIR = os.path.join(BASE_DIR, "public")
 
-IS_SERVERLESS = bool(os.environ.get("VERCEL") or os.environ.get("AWS_LAMBDA_FUNCTION_NAME"))
+IS_SERVERLESS = bool(
+    os.environ.get("VERCEL")
+    or os.environ.get("AWS_LAMBDA_FUNCTION_NAME")
+    or os.environ.get("AGENT_SERVERLESS")  # forzata dalle funzioni in api/ (vedi _handler.py)
+)
 DATA_DIR = (
     os.environ.get("DATA_DIR")
     or ("/tmp/agentnews" if IS_SERVERLESS else os.path.join(BASE_DIR, "data"))
@@ -81,12 +85,13 @@ MODEL_LOCKED = bool(os.environ.get("OPENROUTER_MODEL") or os.environ.get("DEFAUL
 # Su serverless tutto deve stare dentro il timeout della funzione (Vercel Hobby: 60s).
 # Per starci: fetch in parallelo + agenti in parallelo + timeout/tentativi ridotti + un
 # "budget" complessivo oltre il quale restituiamo i risultati parziali gia' pronti.
-LLM_TIMEOUT = int(os.environ.get("LLM_TIMEOUT", "22" if IS_SERVERLESS else "90"))
-HTTP_TIMEOUT = int(os.environ.get("HTTP_TIMEOUT", "8" if IS_SERVERLESS else "25"))
+LLM_TIMEOUT = int(os.environ.get("LLM_TIMEOUT", "18" if IS_SERVERLESS else "90"))
+HTTP_TIMEOUT = int(os.environ.get("HTTP_TIMEOUT", "7" if IS_SERVERLESS else "25"))
 # Tentativi per chiamata: su serverless 1 (i retry con sleep mangiano il budget).
 LLM_ATTEMPTS = int(os.environ.get("LLM_ATTEMPTS", "1" if IS_SERVERLESS else "2"))
 # Budget complessivo per una run, in secondi (0 = nessun limite, usato in locale).
-RUN_BUDGET = int(os.environ.get("RUN_BUDGET", "52" if IS_SERVERLESS else "0"))
+# Tenuto sotto i 60s del piano Hobby con margine per la risposta HTTP.
+RUN_BUDGET = int(os.environ.get("RUN_BUDGET", "45" if IS_SERVERLESS else "0"))
 
 DEFAULT_CONFIG = {
     "openrouter_api_key": os.environ.get("OPENROUTER_API_KEY", ""),
@@ -727,9 +732,18 @@ def do_run():
         log(f"Scarico le news da {len(srcs)} fonti...")
         news = fetch_news()
         log(f"Totale {len(news)} titoli (deduplicati). Estrazione notizie rilevanti...")
+        # Persisto subito le news: cosi' restano visibili anche se gli agenti
+        # non fanno in tempo a rispondere dentro il budget (Vercel).
+        with _lock:
+            state["news"] = news
+        save_state()
 
         macro_summary, relevant = run_extractor(news)
         agents = config["agents"]
+        with _lock:
+            state["macro_summary"] = macro_summary
+            state["relevant_news"] = relevant
+        save_state()
         log(f"Notizie rilevanti: {len(relevant)}. Interrogo {len(agents)} agenti in parallelo...")
 
         # Gli agenti girano IN PARALLELO e con un budget di tempo complessivo: se la
@@ -757,11 +771,7 @@ def do_run():
         # non blocchiamo la risposta aspettando gli agenti rimasti indietro
         ex.shutdown(wait=False, cancel_futures=True)
 
-        if not reports:
-            raise RuntimeError("Nessun agente ha risposto in tempo. Controlla API key e modelli, "
-                               "oppure usa modelli piu' veloci / meno agenti.")
-
-        consensus = aggregate(reports, config["assets"])
+        consensus = aggregate(reports, config["assets"]) if reports else []
 
         with _lock:
             state["news"] = news
@@ -772,9 +782,16 @@ def do_run():
             state["last_run"] = now_iso()
             state["status"] = "ok"
             state["run_count"] += 1
+            # Niente pareri in tempo: mostriamo comunque news e contesto, con un avviso.
+            state["last_error"] = (None if reports else
+                                   "Nessun agente ha risposto entro il limite di tempo: "
+                                   "mostro solo news e contesto. Usa un modello piu' veloce "
+                                   "o riduci agenti/asset.")
         save_state()
-        append_history(consensus, reports)
-        log("Analisi completata.")
+        if reports:
+            append_history(consensus, reports)
+        log("Analisi completata." if reports else
+            "Analisi completata senza pareri (timeout agenti): news e contesto disponibili.")
     except Exception as e:
         log(f"Errore analisi: {e}")
         traceback.print_exc()
