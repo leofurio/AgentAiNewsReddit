@@ -121,7 +121,10 @@ start.bat            avvio rapido su Windows
 | `OPENROUTER_MODEL` | modello di default, es. `openai/gpt-4o-mini`, `anthropic/claude-3.5-haiku` (alias: `DEFAULT_MODEL`) |
 | `PORT` | porta del server locale (default `8765`) |
 | `DATA_DIR` | cartella dati (default: `data/` in locale, `/tmp/agentnews` su Vercel) |
-| `LLM_TIMEOUT` | timeout per chiamata al modello in secondi (default `90` locale, `45` su serverless) |
+| `LLM_TIMEOUT` | timeout per chiamata al modello in secondi (default `90` locale, `22` su serverless) |
+| `HTTP_TIMEOUT` | timeout per il fetch di ogni fonte (default `25` locale, `8` su serverless) |
+| `LLM_ATTEMPTS` | tentativi per chiamata al modello (default `2` locale, `1` su serverless) |
+| `RUN_BUDGET` | budget totale in secondi per una analisi su serverless (default `52`; `0` = nessun limite) |
 | `OPENROUTER_REFERER` | header `HTTP-Referer` inviato a OpenRouter (default `http://localhost:PORT`) |
 
 ---
@@ -148,9 +151,12 @@ L'app gira su Vercel come **funzioni serverless Python** (cartella `api/`) + das
   In ogni caso puoi sempre lanciare l'analisi a mano dal pulsante.
 - **Persistenza effimera**: lo stato va in `/tmp` (perso ai cold start e non condiviso fra istanze).
   Per questo la configurazione va messa nelle **variabili d'ambiente**, non solo nelle impostazioni UI.
-- **Timeout**: ogni analisi deve stare nel timeout della funzione (`maxDuration: 60` in `vercel.json`).
-  Per restare comodo usa **modelli veloci** (mini/flash/haiku) e **pochi agenti**; il piano Hobby
-  limita la durata massima.
+- **Timeout**: ogni analisi deve stare nel timeout della funzione (`maxDuration: 60` in `vercel.json`,
+  il massimo sul piano Hobby). Per starci, su serverless l'app **scarica le fonti e interroga gli
+  agenti in parallelo**, riduce timeout/tentativi e applica un **budget di tempo** (`RUN_BUDGET`)
+  oltre il quale restituisce i pareri gia' pronti. Per il massimo della resa usa comunque
+  **modelli veloci** (mini/flash/haiku) e **pochi agenti/asset**. Su piano **Pro** puoi alzare
+  `maxDuration` e i timeout per analisi piu' ricche.
 
 ## Note
 

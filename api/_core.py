@@ -27,6 +27,7 @@ import traceback
 import urllib.request
 import urllib.error
 import xml.etree.ElementTree as ET
+from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError as FuturesTimeout
 from datetime import datetime, timezone
 
 # Su Windows la console usa cp1252: forza UTF-8 cosi' emoji/accenti non fanno crashare.
@@ -75,8 +76,15 @@ DEFAULT_MODEL = (
     or "openai/gpt-4o-mini"
 )
 
-# Su serverless le chiamate al modello devono stare dentro il timeout della funzione.
-LLM_TIMEOUT = int(os.environ.get("LLM_TIMEOUT", "45" if IS_SERVERLESS else "90"))
+# Su serverless tutto deve stare dentro il timeout della funzione (Vercel Hobby: 60s).
+# Per starci: fetch in parallelo + agenti in parallelo + timeout/tentativi ridotti + un
+# "budget" complessivo oltre il quale restituiamo i risultati parziali gia' pronti.
+LLM_TIMEOUT = int(os.environ.get("LLM_TIMEOUT", "22" if IS_SERVERLESS else "90"))
+HTTP_TIMEOUT = int(os.environ.get("HTTP_TIMEOUT", "8" if IS_SERVERLESS else "25"))
+# Tentativi per chiamata: su serverless 1 (i retry con sleep mangiano il budget).
+LLM_ATTEMPTS = int(os.environ.get("LLM_ATTEMPTS", "1" if IS_SERVERLESS else "2"))
+# Budget complessivo per una run, in secondi (0 = nessun limite, usato in locale).
+RUN_BUDGET = int(os.environ.get("RUN_BUDGET", "52" if IS_SERVERLESS else "0"))
 
 DEFAULT_CONFIG = {
     "openrouter_api_key": os.environ.get("OPENROUTER_API_KEY", ""),
@@ -230,7 +238,9 @@ MAX_HEADLINES = 70   # tetto totale di titoli passati agli agenti (controlla i t
 FEED_ACCEPT = "application/rss+xml, application/atom+xml, application/xml;q=0.9, */*;q=0.8"
 
 
-def _http_bytes(url, accept, timeout=25):
+def _http_bytes(url, accept, timeout=None):
+    if timeout is None:
+        timeout = HTTP_TIMEOUT
     headers = {
         "User-Agent": REDDIT_UA,
         "Accept": accept,
@@ -244,7 +254,7 @@ def _http_bytes(url, accept, timeout=25):
         return resp.read()
 
 
-def _http_get(url, accept, timeout=30):
+def _http_get(url, accept, timeout=None):
     return _http_bytes(url, accept, timeout).decode("utf-8", "replace")
 
 
@@ -333,7 +343,7 @@ def fetch_one(source, limit):
         except Exception as e:
             log(f"  {name}: .json bloccato ({e}); provo RSS")
         url = _rss_url_from(url)
-    raw = _http_bytes(url, FEED_ACCEPT, 25)
+    raw = _http_bytes(url, FEED_ACCEPT)
     return _parse_feed(raw, name, limit)
 
 
@@ -350,16 +360,23 @@ def fetch_news():
     if not sources:
         raise RuntimeError("Nessuna fonte attiva: abilita almeno una fonte nelle impostazioni.")
     per = max(3, int(config.get("news_limit", 12)))
-    lists = []
+    # Scarico le fonti IN PARALLELO: in serie 6+ feed con i loro timeout sforerebbero
+    # facilmente il limite della funzione su Vercel.
+    results = {}
     errors = []
-    for src in sources:
-        try:
-            posts = fetch_one(src, per)
-            lists.append(posts)
-            log(f"  {src['name']}: {len(posts)} titoli")
-        except Exception as e:
-            errors.append(src.get("name", "?"))
-            log(f"  {src.get('name','?')}: errore ({e})")
+    with ThreadPoolExecutor(max_workers=min(8, len(sources))) as ex:
+        futures = {ex.submit(fetch_one, src, per): src for src in sources}
+        for fut in as_completed(futures):
+            src = futures[fut]
+            try:
+                posts = fut.result()
+                results[src["name"]] = posts
+                log(f"  {src['name']}: {len(posts)} titoli")
+            except Exception as e:
+                errors.append(src.get("name", "?"))
+                log(f"  {src.get('name','?')}: errore ({e})")
+    # mantengo l'ordine originale delle fonti per il round-robin
+    lists = [results[s["name"]] for s in sources if s["name"] in results]
     # round-robin tra le fonti per mescolare le testate
     merged = []
     i = 0
@@ -413,7 +430,8 @@ def call_openrouter(model, system_prompt, user_prompt, temperature=0.4, max_toke
     )
     ctx = ssl.create_default_context()
     last_err = None
-    for attempt in range(2):
+    for attempt in range(LLM_ATTEMPTS):
+        is_last = attempt == LLM_ATTEMPTS - 1
         try:
             with urllib.request.urlopen(req, timeout=LLM_TIMEOUT, context=ctx) as resp:
                 payload = json.loads(resp.read().decode("utf-8", "replace"))
@@ -421,13 +439,13 @@ def call_openrouter(model, system_prompt, user_prompt, temperature=0.4, max_toke
         except urllib.error.HTTPError as e:
             detail = e.read().decode("utf-8", "replace")[:400]
             last_err = f"HTTP {e.code} dal modello {model}: {detail}"
-            if e.code in (429, 500, 502, 503) and attempt == 0:
+            if e.code in (429, 500, 502, 503) and not is_last:
                 time.sleep(3)
                 continue
             break
         except Exception as e:
             last_err = f"{type(e).__name__}: {e}"
-            if attempt == 0:
+            if not is_last:
                 time.sleep(2)
                 continue
             break
@@ -536,7 +554,7 @@ def run_extractor(news):
         '"relevant":[{"title":"titolo","why":"perche rilevante","impact":"high|medium|low"}]}'
     )
     last = None
-    for attempt in range(2):
+    for attempt in range(max(1, LLM_ATTEMPTS)):
         try:
             raw = call_openrouter(model, system, user,
                                   temperature=(0.3 if attempt == 0 else 0.1), max_tokens=1200)
@@ -578,10 +596,11 @@ def run_analyst(agent, macro_summary, relevant, assets):
     )
     data = None
     last_err = None
-    for attempt in range(2):
+    max_tokens = 1400 if IS_SERVERLESS else 2000
+    for attempt in range(max(1, LLM_ATTEMPTS)):
         try:
             raw = call_openrouter(model, system, user,
-                                  temperature=(0.35 if attempt == 0 else 0.1), max_tokens=2000)
+                                  temperature=(0.35 if attempt == 0 else 0.1), max_tokens=max_tokens)
             data = extract_json(raw)
             break
         except Exception as e:
@@ -692,6 +711,7 @@ def do_run():
     if not _run_lock.acquire(blocking=False):
         log("Analisi gia' in corso, salto.")
         return
+    run_start = time.monotonic()
     try:
         with _lock:
             state["status"] = "running"
@@ -702,19 +722,37 @@ def do_run():
         log(f"Totale {len(news)} titoli (deduplicati). Estrazione notizie rilevanti...")
 
         macro_summary, relevant = run_extractor(news)
-        log(f"Notizie rilevanti: {len(relevant)}. Interrogo {len(config['agents'])} agenti...")
+        agents = config["agents"]
+        log(f"Notizie rilevanti: {len(relevant)}. Interrogo {len(agents)} agenti in parallelo...")
 
+        # Gli agenti girano IN PARALLELO e con un budget di tempo complessivo: se la
+        # funzione e' vicina al timeout (Vercel), restituiamo i pareri gia' pronti.
         reports = []
-        for agent in config["agents"]:
-            try:
-                rep = run_analyst(agent, macro_summary, relevant, config["assets"])
-                reports.append(rep)
-                log(f"  ✓ {rep['name']} ({rep['model']}) ha risposto.")
-            except Exception as e:
-                log(f"  ✗ Agente '{agent.get('name')}' errore: {e}")
+        ex = ThreadPoolExecutor(max_workers=min(8, max(1, len(agents))))
+        futures = {
+            ex.submit(run_analyst, ag, macro_summary, relevant, config["assets"]): ag
+            for ag in agents
+        }
+        remaining = None
+        if RUN_BUDGET:
+            remaining = max(1.0, RUN_BUDGET - (time.monotonic() - run_start))
+        try:
+            for fut in as_completed(futures, timeout=remaining):
+                ag = futures[fut]
+                try:
+                    rep = fut.result()
+                    reports.append(rep)
+                    log(f"  ✓ {rep['name']} ({rep['model']}) ha risposto.")
+                except Exception as e:
+                    log(f"  ✗ Agente '{ag.get('name')}' errore: {e}")
+        except FuturesTimeout:
+            log(f"  ⏱ Budget tempo esaurito: raccolti {len(reports)}/{len(agents)} pareri in tempo.")
+        # non blocchiamo la risposta aspettando gli agenti rimasti indietro
+        ex.shutdown(wait=False, cancel_futures=True)
 
         if not reports:
-            raise RuntimeError("Nessun agente ha risposto. Controlla API key e modelli.")
+            raise RuntimeError("Nessun agente ha risposto in tempo. Controlla API key e modelli, "
+                               "oppure usa modelli piu' veloci / meno agenti.")
 
         consensus = aggregate(reports, config["assets"])
 
