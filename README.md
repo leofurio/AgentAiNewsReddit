@@ -118,7 +118,7 @@ start.bat            avvio rapido su Windows
 | Variabile | Significato |
 |-----------|-------------|
 | `OPENROUTER_API_KEY` | la tua chiave OpenRouter (consigliata su Vercel) |
-| `OPENROUTER_MODEL` | modello di default, es. `openai/gpt-4o-mini`, `anthropic/claude-3.5-haiku` (alias: `DEFAULT_MODEL`) |
+| `OPENROUTER_MODEL` | modello di default, es. `openai/gpt-4o-mini`, `anthropic/claude-3.5-haiku` (alias: `DEFAULT_MODEL`). Se impostata, il modello è **bloccato**: non è modificabile dalle impostazioni della UI |
 | `PORT` | porta del server locale (default `8765`) |
 | `DATA_DIR` | cartella dati (default: `data/` in locale, `/tmp/agentnews` su Vercel) |
 | `LLM_TIMEOUT` | timeout per chiamata al modello in secondi (default `90` locale, `22` su serverless) |

@@ -264,7 +264,9 @@ footer{padding:20px 28px; color:var(--muted); font-size:12px; border-top:1px sol
   border-radius:11px; padding:10px 13px; font-size:13px; font-family:inherit; transition:.15s}
 .modal-body input:focus,.modal-body textarea:focus{outline:none; border-color:var(--brand); box-shadow:0 0 0 3px rgba(99,102,241,.25)}
 .modal-body textarea.mono{font-family:"JetBrains Mono",Consolas,monospace; font-size:12px}
+.modal-body input:disabled{opacity:.6; cursor:not-allowed}
 .modal-body small{display:block; color:var(--muted); font-weight:400; margin-top:6px; font-size:11px}
+.modal-body small.lock-note{color:var(--cyan)}
 .modal-body code{background:rgba(0,0,0,.4); padding:1px 6px; border-radius:6px; font-size:11px; font-family:"JetBrains Mono",monospace; color:var(--cyan)}
 .src-list{margin-top:7px; display:flex; flex-direction:column; gap:6px; max-height:210px; overflow:auto; padding-right:4px}
 .src-row{display:flex; align-items:center; gap:10px; padding:8px 11px; border-radius:10px;

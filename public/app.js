@@ -210,6 +210,10 @@ function openSettings() {
   $("apiKey").value = "";
   $("apiKey").placeholder = cfg.api_key_set ? "(chiave salvata — lascia vuoto per non cambiarla)" : "sk-or-v1-...";
   $("defaultModel").value = cfg.default_model || "";
+  // Se il modello è fissato da una variabile d'ambiente, non è modificabile.
+  const modelLocked = !!cfg.model_locked;
+  $("defaultModel").disabled = modelLocked;
+  $("modelLockNote").classList.toggle("hidden", !modelLocked);
   $("interval").value = cfg.interval_minutes || 5;
   $("newsLimit").value = cfg.news_limit || 12;
   $("autoRun").checked = !!cfg.auto_run;
@@ -243,7 +247,6 @@ async function saveSettings() {
     return;
   }
   const payload = {
-    default_model: $("defaultModel").value.trim(),
     interval_minutes: parseInt($("interval").value) || 5,
     news_limit: parseInt($("newsLimit").value) || 12,
     auto_run: $("autoRun").checked,
@@ -251,6 +254,8 @@ async function saveSettings() {
     agents: agents,
     sources: editSources,
   };
+  // Il modello si invia solo se non è bloccato da una variabile d'ambiente.
+  if (!cfg.model_locked) payload.default_model = $("defaultModel").value.trim();
   const k = $("apiKey").value.trim();
   if (k) payload.openrouter_api_key = k;
 

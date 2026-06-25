@@ -75,6 +75,8 @@ DEFAULT_MODEL = (
     or os.environ.get("DEFAULT_MODEL")
     or "openai/gpt-4o-mini"
 )
+# Se il modello e' fissato via ENV, non e' modificabile dall'interfaccia.
+MODEL_LOCKED = bool(os.environ.get("OPENROUTER_MODEL") or os.environ.get("DEFAULT_MODEL"))
 
 # Su serverless tutto deve stare dentro il timeout della funzione (Vercel Hobby: 60s).
 # Per starci: fetch in parallelo + agenti in parallelo + timeout/tentativi ridotti + un
@@ -203,6 +205,7 @@ def public_config():
     key = c.get("openrouter_api_key", "") or ""
     c["openrouter_api_key"] = ("•••• " + key[-4:]) if len(key) >= 4 else ""
     c["api_key_set"] = bool(key)
+    c["model_locked"] = MODEL_LOCKED
     return c
 
 
@@ -211,6 +214,10 @@ def update_config(payload):
     global config
     allowed = {"default_model", "interval_minutes", "news_limit", "auto_run",
                "subreddit_url", "assets", "agents", "sources"}
+    # Se il modello e' fissato via ENV, ignora ogni tentativo di cambiarlo dall'interfaccia.
+    if MODEL_LOCKED:
+        allowed.discard("default_model")
+        config["default_model"] = DEFAULT_MODEL
     for k in allowed:
         if k in payload:
             config[k] = payload[k]
