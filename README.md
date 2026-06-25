@@ -151,6 +151,8 @@ L'app gira su Vercel come **funzioni serverless Python** (cartella `api/`) + das
   In ogni caso puoi sempre lanciare l'analisi a mano dal pulsante.
 - **Persistenza effimera**: lo stato va in `/tmp` (perso ai cold start e non condiviso fra istanze).
   Per questo la configurazione va messa nelle **variabili d'ambiente**, non solo nelle impostazioni UI.
+  La dashboard tiene una copia dell'**ultima analisi** (risultati e **log del motore**) nel browser
+  (`localStorage`), così resta visibile anche se un polling cade su un'istanza "fredda" senza dati.
 - **Timeout**: ogni analisi deve stare nel timeout della funzione (`maxDuration: 60` in `vercel.json`,
   il massimo sul piano Hobby). Per starci, su serverless l'app **scarica le fonti e interroga gli
   agenti in parallelo**, riduce timeout/tentativi e applica un **budget di tempo** (`RUN_BUDGET`)
