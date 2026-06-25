@@ -142,9 +142,10 @@ L'app gira su Vercel come **funzioni serverless Python** (cartella `api/`) + das
 - **Niente scheduler in background**: su serverless i thread non sopravvivono alla richiesta.
   L'analisi gira in modo **sincrono** quando premi *Analizza ora* (`/api/run-now`) e il risultato
   torna direttamente nella risposta, così la dashboard si aggiorna subito.
-- **Analisi periodica** via **Vercel Cron** (`/api/cron`, configurata in `vercel.json`, default ogni 6h).
-  La frequenza minima dei cron dipende dal tuo piano Vercel (sul piano Hobby è limitata):
-  in ogni caso puoi sempre lanciare l'analisi a mano dal pulsante.
+- **Analisi periodica** via **Vercel Cron** (`/api/cron`, configurata in `vercel.json`).
+  Il default è **una volta al giorno** (`0 6 * * *`) perché il piano **Hobby** permette solo cron
+  giornalieri; con il piano **Pro** puoi aumentare la frequenza (es. `0 */6 * * *`).
+  In ogni caso puoi sempre lanciare l'analisi a mano dal pulsante.
 - **Persistenza effimera**: lo stato va in `/tmp` (perso ai cold start e non condiviso fra istanze).
   Per questo la configurazione va messa nelle **variabili d'ambiente**, non solo nelle impostazioni UI.
 - **Timeout**: ogni analisi deve stare nel timeout della funzione (`maxDuration: 60` in `vercel.json`).
