@@ -15,6 +15,11 @@ from _handler import BaseHandler, _core  # noqa: E402
 
 class handler(BaseHandler):
     def do_POST(self):
+        # Il client invia la sua config (fonti/asset/agenti) salvata nel browser:
+        # su serverless l'istanza è "fredda" e altrimenti userebbe i default.
+        payload = self._body()
+        if payload:
+            _core.update_config(payload)
         _core.do_run()
         self._send(200, {"ok": True, "state": _core.state_snapshot()})
 

@@ -3,6 +3,11 @@ const $ = (id) => document.getElementById(id);
 let cfg = null;
 let nextRunAt = null;
 
+// Config dell'utente salvata nel browser (fonti, asset, agenti, ...): così le scelte
+// non si perdono al riavvio, anche su serverless dove lo storage del server è effimero.
+let userConfig = null;
+try { userConfig = JSON.parse(localStorage.getItem("userConfig") || "null"); } catch (e) {}
+
 const STATUS_LABEL = {
   idle: "In attesa",
   needs_config: "Configura API key",
@@ -34,7 +39,7 @@ async function fetchState() {
     const s = await r.json();
     let view = s;
     if (!hasData(s) && hasData(lastGood)) {
-      // mantieni l'ultima analisi visibile, ma aggiorna la config (es. model_locked)
+      // mantieni l'ultima analisi visibile, ma aggiorna la config dal server
       view = Object.assign({}, lastGood, { config: s.config || lastGood.config });
     }
     render(view);
@@ -61,7 +66,7 @@ function render(s) {
   const banner = $("banner");
   if (s.status === "needs_config") {
     banner.className = "banner";
-    banner.innerHTML = "🔑 Inserisci la tua <b>OpenRouter API key</b> nelle Impostazioni per iniziare.";
+    banner.innerHTML = "🔑 Manca la chiave: imposta la variabile d'ambiente <b>OPENROUTER_API_KEY</b> (su Vercel: Settings → Environment Variables).";
   } else if (s.status === "error" && s.last_error) {
     banner.className = "banner error";
     banner.textContent = "Errore: " + s.last_error;
@@ -230,20 +235,30 @@ function renderSources() {
   });
 }
 
+// Config "effettiva" dei campi modificabili: preferisce quella salvata nel browser,
+// con fallback ai default forniti dal server.
+function effectiveCfg() {
+  const u = userConfig || {};
+  const s = cfg || {};
+  const pick = (k, def) => (u[k] !== undefined ? u[k] : (s[k] !== undefined ? s[k] : def));
+  return {
+    interval_minutes: pick("interval_minutes", 5),
+    news_limit: pick("news_limit", 12),
+    auto_run: pick("auto_run", true),
+    assets: pick("assets", []),
+    agents: pick("agents", []),
+    sources: pick("sources", []),
+  };
+}
+
 function openSettings() {
-  $("apiKey").value = "";
-  $("apiKey").placeholder = cfg.api_key_set ? "(chiave salvata — lascia vuoto per non cambiarla)" : "sk-or-v1-...";
-  $("defaultModel").value = cfg.default_model || "";
-  // Se il modello è fissato da una variabile d'ambiente, non è modificabile.
-  const modelLocked = !!cfg.model_locked;
-  $("defaultModel").disabled = modelLocked;
-  $("modelLockNote").classList.toggle("hidden", !modelLocked);
-  $("interval").value = cfg.interval_minutes || 5;
-  $("newsLimit").value = cfg.news_limit || 12;
-  $("autoRun").checked = !!cfg.auto_run;
-  $("assets").value = (cfg.assets || []).join("\n");
-  $("agents").value = JSON.stringify(cfg.agents || [], null, 2);
-  editSources = JSON.parse(JSON.stringify(cfg.sources || []));
+  const e = effectiveCfg();
+  $("interval").value = e.interval_minutes || 5;
+  $("newsLimit").value = e.news_limit || 12;
+  $("autoRun").checked = !!e.auto_run;
+  $("assets").value = (e.assets || []).join("\n");
+  $("agents").value = JSON.stringify(e.agents || [], null, 2);
+  editSources = JSON.parse(JSON.stringify(e.sources || []));
   renderSources();
   $("settingsError").classList.add("hidden");
   $("settingsModal").classList.remove("hidden");
@@ -278,26 +293,30 @@ async function saveSettings() {
     agents: agents,
     sources: editSources,
   };
-  // Il modello si invia solo se non è bloccato da una variabile d'ambiente.
-  if (!cfg.model_locked) payload.default_model = $("defaultModel").value.trim();
-  const k = $("apiKey").value.trim();
-  if (k) payload.openrouter_api_key = k;
-
-  const r = await fetch("/api/config", {
-    method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  });
-  if (r.ok) { closeSettings(); fetchState(); }
-  else { err.textContent = "Errore nel salvataggio."; err.classList.remove("hidden"); }
+  // Salva nel browser (persistente fra riavvii) ...
+  userConfig = payload;
+  try { localStorage.setItem("userConfig", JSON.stringify(userConfig)); } catch (e) {}
+  // ... e aggiorna anche l'istanza del server (best-effort, utile finché resta "calda").
+  try {
+    await fetch("/api/config", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+  } catch (e) {}
+  closeSettings();
+  fetchState();
 }
 
 async function runNow() {
   const btn = $("runNowBtn");
   btn.disabled = true; btn.textContent = "⏳ Analisi…";
   try {
-    // Su serverless (Vercel) l'analisi gira in modo sincrono e torna nel body:
-    // la usiamo subito, cosi' la dashboard si aggiorna anche senza stato condiviso.
-    const r = await fetch("/api/run-now", { method: "POST" });
+    // Mando la mia config (fonti/asset/agenti) col run: su serverless l'istanza è
+    // "fredda" e non conosce le impostazioni salvate nel browser, quindi le passo qui.
+    const r = await fetch("/api/run-now", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(userConfig || {}),
+    });
     const data = await r.json().catch(() => null);
     if (data && data.state) render(data.state);
   } catch (e) {

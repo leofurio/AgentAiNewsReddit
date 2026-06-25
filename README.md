@@ -42,26 +42,36 @@ Doppio click su **`start.bat`**, oppure da terminale:
 python server.py
 ```
 
-Poi apri **http://localhost:8765** nel browser.
+Imposta prima la chiave (e, volendo, il modello) come variabile d'ambiente:
 
-Alla prima apertura:
-1. Clicca **⚙ Impostazioni**
-2. Incolla la tua **OpenRouter API key** e salva
-3. Premi **▶ Analizza ora** (oppure aspetta il ciclo automatico)
+```powershell
+$env:OPENROUTER_API_KEY="sk-or-v1-..."   # PowerShell
+$env:OPENROUTER_MODEL="openai/gpt-4o-mini"
+python server.py
+```
+
+Poi apri **http://localhost:8765** nel browser e premi **▶ Analizza ora**
+(oppure aspetta il ciclo automatico). Le fonti e gli asset si personalizzano da
+**⚙ Impostazioni** e restano salvati nel browser.
 
 ---
 
 ## Configurazione (⚙ Impostazioni)
 
+> 🔑 **Chiave** e **modello** NON sono nelle impostazioni: si configurano **solo** tramite
+> variabili d'ambiente (`OPENROUTER_API_KEY`, `OPENROUTER_MODEL`). Vedi sopra.
+
 | Campo | Significato |
 |-------|-------------|
-| **API key** | la tua chiave OpenRouter (salvata solo in `data/config.json` sul tuo PC) |
-| **Modello di default** | es. `openai/gpt-4o-mini`, `anthropic/claude-3.5-haiku`, `google/gemini-2.0-flash-001` — lista su https://openrouter.ai/models |
 | **Intervallo** | minuti tra un'analisi e l'altra (default 5) |
 | **News per fonte** | quanti titoli leggere da ciascuna fonte (tetto totale 70 per contenere i token) |
 | **Fonti news** | checklist di feed (RSS/Atom o Reddit): spunta quelle da usare, aggiungi/rimuovi a piacere |
 | **Asset / indici** | uno per riga (es. `S&P 500`, `FTSE MIB`, `Bitcoin`, `Intesa Sanpaolo`…) |
-| **Agenti** | lista JSON: ogni agente ha `name`, `model` (vuoto = usa il default), `persona` |
+| **Agenti** | lista JSON: ogni agente ha `name`, `persona` (il modello è quello da ENV) |
+
+> 💾 **Le impostazioni (fonti, asset, agenti, intervallo) vengono salvate nel tuo browser**
+> (`localStorage`) e inviate al backend a ogni analisi: **non si perdono al riavvio**, anche su
+> Vercel dove lo storage del server è effimero. (Sono per-browser; non sincronizzate fra dispositivi.)
 
 ### Fonti incluse (testate e funzionanti)
 
