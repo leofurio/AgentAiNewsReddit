@@ -264,10 +264,19 @@ async function saveSettings() {
 
 async function runNow() {
   const btn = $("runNowBtn");
-  btn.disabled = true; btn.textContent = "⏳ Avvio…";
-  await fetch("/api/run-now", { method: "POST" });
-  setTimeout(() => { btn.disabled = false; btn.textContent = "▶ Analizza ora"; }, 1500);
-  fetchState();
+  btn.disabled = true; btn.textContent = "⏳ Analisi…";
+  try {
+    // Su serverless (Vercel) l'analisi gira in modo sincrono e torna nel body:
+    // la usiamo subito, cosi' la dashboard si aggiorna anche senza stato condiviso.
+    const r = await fetch("/api/run-now", { method: "POST" });
+    const data = await r.json().catch(() => null);
+    if (data && data.state) render(data.state);
+  } catch (e) {
+    /* il polling periodico recuperera' lo stato */
+  } finally {
+    btn.disabled = false; btn.textContent = "▶ Analizza ora";
+    fetchState();
+  }
 }
 
 $("settingsBtn").addEventListener("click", openSettings);

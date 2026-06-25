@@ -92,11 +92,20 @@ Puoi mettere modelli diversi per "far discutere" più AI sullo stesso set di new
 ## Struttura dei file
 
 ```
-server.py            backend: HTTP + scheduler + fetch multi-fonte + agenti
+api/_core.py         logica condivisa: config + fetch multi-fonte + OpenRouter + pipeline agenti
+api/_handler.py      base comune per le funzioni serverless
+api/state.py         GET  /api/state     (stato corrente)
+api/run-now.py       POST /api/run-now   (esegue un'analisi e restituisce il risultato)
+api/config.py        POST /api/config    (aggiorna le impostazioni)
+api/history.py       GET  /api/history   (storico)
+api/cron.py          GET  /api/cron      (innescata da Vercel Cron)
+server.py            server locale standalone (HTTP + scheduler) attorno a api/_core.py
+vercel.json          configurazione deploy Vercel (routing + cron + maxDuration)
+requirements.txt     vuoto: solo standard library
 public/index.html    dashboard
 public/style.css
 public/app.js
-data/config.json     impostazioni salvate (creato al primo salvataggio) — contiene la API key
+data/config.json     impostazioni salvate in locale (contiene la API key)
 data/latest.json     ultima analisi
 data/history.jsonl   storico (una riga per run)
 start.bat            avvio rapido su Windows
@@ -104,10 +113,44 @@ start.bat            avvio rapido su Windows
 
 > 🔒 La cartella `data/` è in `.gitignore`: **la tua API key non finisce mai su Git/GitHub.**
 
-## Variabili d'ambiente (opzionali)
+## Variabili d'ambiente
 
-- `OPENROUTER_API_KEY` — imposta la chiave senza usare la UI
-- `PORT` — porta del server (default `8765`)
+| Variabile | Significato |
+|-----------|-------------|
+| `OPENROUTER_API_KEY` | la tua chiave OpenRouter (consigliata su Vercel) |
+| `OPENROUTER_MODEL` | modello di default, es. `openai/gpt-4o-mini`, `anthropic/claude-3.5-haiku` (alias: `DEFAULT_MODEL`) |
+| `PORT` | porta del server locale (default `8765`) |
+| `DATA_DIR` | cartella dati (default: `data/` in locale, `/tmp/agentnews` su Vercel) |
+| `LLM_TIMEOUT` | timeout per chiamata al modello in secondi (default `90` locale, `45` su serverless) |
+| `OPENROUTER_REFERER` | header `HTTP-Referer` inviato a OpenRouter (default `http://localhost:PORT`) |
+
+---
+
+## 🚀 Deploy su Vercel
+
+L'app gira su Vercel come **funzioni serverless Python** (cartella `api/`) + dashboard statica
+(cartella `public/`). Nessuna dipendenza da installare: solo standard library.
+
+1. **Importa il repo** su [vercel.com](https://vercel.com) (New Project → importa questo repository).
+2. In **Settings → Environment Variables** imposta almeno:
+   - `OPENROUTER_API_KEY` = la tua chiave OpenRouter
+   - `OPENROUTER_MODEL` = il modello, es. `openai/gpt-4o-mini` (il **model in ENV**)
+3. **Deploy.** Apri l'URL del progetto e premi **▶ Analizza ora**.
+
+### Come funziona su Vercel (differenze dal locale)
+
+- **Niente scheduler in background**: su serverless i thread non sopravvivono alla richiesta.
+  L'analisi gira in modo **sincrono** quando premi *Analizza ora* (`/api/run-now`) e il risultato
+  torna direttamente nella risposta, così la dashboard si aggiorna subito.
+- **Analisi periodica** via **Vercel Cron** (`/api/cron`, configurata in `vercel.json`).
+  Il default è **una volta al giorno** (`0 6 * * *`) perché il piano **Hobby** permette solo cron
+  giornalieri; con il piano **Pro** puoi aumentare la frequenza (es. `0 */6 * * *`).
+  In ogni caso puoi sempre lanciare l'analisi a mano dal pulsante.
+- **Persistenza effimera**: lo stato va in `/tmp` (perso ai cold start e non condiviso fra istanze).
+  Per questo la configurazione va messa nelle **variabili d'ambiente**, non solo nelle impostazioni UI.
+- **Timeout**: ogni analisi deve stare nel timeout della funzione (`maxDuration: 60` in `vercel.json`).
+  Per restare comodo usa **modelli veloci** (mini/flash/haiku) e **pochi agenti**; il piano Hobby
+  limita la durata massima.
 
 ## Note
 
