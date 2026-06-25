@@ -127,35 +127,19 @@
       <button id="closeSettings" class="btn-icon">✕</button>
     </div>
     <div class="modal-body">
-      <label>OpenRouter API key
-        <input id="apiKey" type="password" placeholder="sk-or-v1-..." autocomplete="off">
-        <small>Ottienila su <a href="https://openrouter.ai/keys" target="_blank">openrouter.ai/keys</a>.
-        In locale resta in <code>data/config.json</code>; su Vercel usa la variabile
-        d'ambiente <code>OPENROUTER_API_KEY</code> (vedi README).</small>
-      </label>
-
       <div class="row">
-        <label>Modello di default
-          <input id="defaultModel" type="text" placeholder="openai/gpt-4o-mini">
-          <small id="modelLockNote" class="lock-note hidden">🔒 Modello fissato dalla variabile
-          d'ambiente <code>OPENROUTER_MODEL</code>: non modificabile da qui.</small>
-          <small>Es: <code>openai/gpt-4o-mini</code>, <code>anthropic/claude-3.5-haiku</code>,
-          <code>google/gemini-2.0-flash-001</code> · <a href="https://openrouter.ai/models" target="_blank">tutti i modelli</a></small>
-        </label>
         <label>Intervallo (minuti)
           <input id="interval" type="number" min="1" value="5">
         </label>
-      </div>
-
-      <div class="row">
         <label>News per fonte
           <input id="newsLimit" type="number" min="3" max="50" value="12">
         </label>
-        <label class="check">
-          <input id="autoRun" type="checkbox" checked>
-          <span>Analisi automatica ogni intervallo</span>
-        </label>
       </div>
+
+      <label class="check">
+        <input id="autoRun" type="checkbox" checked>
+        <span>Analisi automatica ogni intervallo</span>
+      </label>
 
       <label>Fonti news (feed RSS/Atom o Reddit)
         <div id="sourcesList" class="src-list"></div>
@@ -164,7 +148,7 @@
           <input id="newSrcUrl" type="text" placeholder="https://…/feed.rss">
           <button id="addSrcBtn" type="button" class="btn">+ Aggiungi</button>
         </div>
-        <small>Spunta le fonti da leggere. Tutte quelle elencate sono già testate e funzionanti.</small>
+        <small>Spunta le fonti da leggere. Le tue scelte vengono salvate nel browser e non si perdono al riavvio.</small>
       </label>
 
       <label>Asset / indici da valutare (uno per riga)
@@ -173,7 +157,7 @@
 
       <label>Agenti (JSON): nome, model (vuoto = default), persona
         <textarea id="agents" rows="8" class="mono"></textarea>
-        <small>Ogni agente è una voce del panel. Puoi mettere modelli diversi per “far discutere” più AI.</small>
+        <small>Ogni agente è una voce del panel. Il modello è quello impostato dall'amministratore.</small>
       </label>
 
       <div id="settingsError" class="form-error hidden"></div>
