@@ -417,11 +417,12 @@ def fetch_news():
 # ---------------------------------------------------------------------------
 # OpenRouter call
 # ---------------------------------------------------------------------------
-def call_openrouter(model, system_prompt, user_prompt, temperature=0.4, max_tokens=1600):
+def call_openrouter(model, system_prompt, user_prompt, temperature=0.4, max_tokens=1600,
+                    force_json=False):
     key = config.get("openrouter_api_key", "")
     if not key:
         raise RuntimeError("OPENROUTER_API_KEY mancante")
-    body = {
+    base_body = {
         "model": model,
         "temperature": temperature,
         "max_tokens": max_tokens,
@@ -430,20 +431,24 @@ def call_openrouter(model, system_prompt, user_prompt, temperature=0.4, max_toke
             {"role": "user", "content": user_prompt},
         ],
     }
-    data = json.dumps(body).encode("utf-8")
-    req = urllib.request.Request(
-        OPENROUTER_URL, data=data, method="POST",
-        headers={
-            "Authorization": f"Bearer {key}",
-            "Content-Type": "application/json",
-            "HTTP-Referer": os.environ.get("OPENROUTER_REFERER", "http://localhost:%d" % PORT),
-            "X-Title": "AgentAiNewsReddit",
-        },
-    )
+    headers = {
+        "Authorization": f"Bearer {key}",
+        "Content-Type": "application/json",
+        "HTTP-Referer": os.environ.get("OPENROUTER_REFERER", "http://localhost:%d" % PORT),
+        "X-Title": "AgentAiNewsReddit",
+    }
     ctx = ssl.create_default_context()
     last_err = None
-    for attempt in range(LLM_ATTEMPTS):
-        is_last = attempt == LLM_ATTEMPTS - 1
+    use_json = force_json   # chiede output JSON; se il modello non lo supporta, si ripiega
+    attempts_left = max(1, LLM_ATTEMPTS)
+    while attempts_left > 0:
+        body = dict(base_body)
+        if use_json:
+            body["response_format"] = {"type": "json_object"}
+        req = urllib.request.Request(
+            OPENROUTER_URL, data=json.dumps(body).encode("utf-8"),
+            method="POST", headers=headers,
+        )
         try:
             with urllib.request.urlopen(req, timeout=LLM_TIMEOUT, context=ctx) as resp:
                 payload = json.loads(resp.read().decode("utf-8", "replace"))
@@ -451,16 +456,23 @@ def call_openrouter(model, system_prompt, user_prompt, temperature=0.4, max_toke
         except urllib.error.HTTPError as e:
             detail = e.read().decode("utf-8", "replace")[:400]
             last_err = f"HTTP {e.code} dal modello {model}: {detail}"
-            if e.code in (429, 500, 502, 503) and not is_last:
+            # il modello potrebbe non supportare response_format: riprova senza, gratis
+            if use_json and e.code in (400, 404, 415, 422, 500):
+                use_json = False
+                continue
+            if e.code in (429, 500, 502, 503) and attempts_left > 1:
                 time.sleep(3)
+                attempts_left -= 1
                 continue
             break
         except Exception as e:
             last_err = f"{type(e).__name__}: {e}"
-            if not is_last:
+            if attempts_left > 1:
                 time.sleep(2)
+                attempts_left -= 1
                 continue
             break
+        attempts_left -= 1
     raise RuntimeError(last_err or "Errore sconosciuto OpenRouter")
 
 
@@ -505,6 +517,45 @@ def _repair_json(s):
     return "".join(out)
 
 
+def _balance_json(s):
+    """Chiude un JSON 'troncato': se la risposta del modello è stata tagliata a metà
+    (max_tokens), bilancia stringhe e parentesi aperte cosi' da recuperare il possibile."""
+    s = s.rstrip()
+    stack = []
+    in_str = False
+    esc = False
+    last_close = -1   # indice dell'ultima chiusura completa di stringa/oggetto/array
+    for i, c in enumerate(s):
+        if in_str:
+            if esc:
+                esc = False
+            elif c == "\\":
+                esc = True
+            elif c == '"':
+                in_str = False
+                last_close = i
+        else:
+            if c == '"':
+                in_str = True
+            elif c == "{":
+                stack.append("}")
+            elif c == "[":
+                stack.append("]")
+            elif c in "}]":
+                if stack:
+                    stack.pop()
+                last_close = i
+    if in_str:
+        # tagliato dentro una stringa: torna all'ultimo valore/struttura completa
+        if last_close >= 0:
+            return _balance_json(s[:last_close + 1])
+        return None
+    out = re.sub(r",\s*$", "", s)   # togli virgola penzolante
+    for closer in reversed(stack):
+        out += closer
+    return out
+
+
 def extract_json(text):
     """Estrae il primo oggetto JSON da una risposta del modello, riparandolo se serve."""
     if not text:
@@ -514,10 +565,11 @@ def extract_json(text):
     t = re.sub(r"^```[a-zA-Z]*\s*", "", t)
     t = re.sub(r"\s*```$", "", t).strip()
     start = t.find("{")
-    end = t.rfind("}")
-    if start == -1 or end == -1 or end < start:
+    if start == -1:
         raise ValueError("Nessun JSON trovato nella risposta")
-    blob = t[start:end + 1]
+    end = t.rfind("}")
+    # se manca la graffa di chiusura, la risposta e' troncata: prendi fino in fondo
+    blob = t[start:end + 1] if end > start else t[start:]
     cleaned = re.sub(r",(\s*[}\]])", r"\1", blob)  # togli virgole finali
     # 1-2) tentativo diretto, poi senza virgole finali
     for cand in (blob, cleaned):
@@ -530,6 +582,14 @@ def extract_json(text):
         return json.loads(re.sub(r",(\s*[}\]])", r"\1", _repair_json(cleaned)))
     except json.JSONDecodeError:
         pass
+    # 3b) JSON troncato (max_tokens): bilancia stringhe/parentesi aperte
+    for src in (cleaned, _repair_json(cleaned)):
+        bal = _balance_json(src)
+        if bal:
+            try:
+                return json.loads(re.sub(r",(\s*[}\]])", r"\1", bal))
+            except Exception:
+                pass
     # 4) il modello ha risposto con un dict stile Python (apici singoli, True/False/None)
     py = re.sub(r"\bnull\b", "None",
                 re.sub(r"\bfalse\b", "False",
@@ -567,13 +627,17 @@ def run_extractor(news):
     )
     last = None
     for attempt in range(max(1, LLM_ATTEMPTS)):
+        raw = None
         try:
             raw = call_openrouter(model, system, user,
-                                  temperature=(0.3 if attempt == 0 else 0.1), max_tokens=1200)
+                                  temperature=(0.3 if attempt == 0 else 0.1),
+                                  max_tokens=1200, force_json=True)
             data = extract_json(raw)
             return data.get("macro_summary", ""), data.get("relevant", [])
         except Exception as e:
             last = e
+            if raw is not None:
+                log(f"  estrattore: parsing fallito ({e}); risposta: {raw[:200]!r}")
     log(f"Estrattore fallito ({last}); uso i titoli grezzi.")
     return "", [{"title": p["title"], "why": "", "impact": "medium"} for p in news[:12]]
 
@@ -608,17 +672,22 @@ def run_analyst(agent, macro_summary, relevant, assets):
     )
     data = None
     last_err = None
-    max_tokens = 1400 if IS_SERVERLESS else 2000
-    for attempt in range(max(1, LLM_ATTEMPTS)):
+    attempts = max(1, LLM_ATTEMPTS)
+    max_tokens = 1600 if IS_SERVERLESS else 2000
+    for attempt in range(attempts):
+        raw = None
         try:
             raw = call_openrouter(model, system, user,
-                                  temperature=(0.35 if attempt == 0 else 0.1), max_tokens=max_tokens)
+                                  temperature=(0.35 if attempt == 0 else 0.1),
+                                  max_tokens=max_tokens, force_json=True)
             data = extract_json(raw)
             break
         except Exception as e:
             last_err = e
+            if raw is not None:
+                log(f"  {name}: parsing JSON fallito ({e}); risposta: {raw[:200]!r}")
     if data is None:
-        raise RuntimeError(f"risposta non in JSON dopo 2 tentativi ({last_err})")
+        raise RuntimeError(f"risposta non in JSON dopo {attempts} tentativi ({last_err})")
     # normalizza
     votes = {}
     for a in data.get("assets", []):
