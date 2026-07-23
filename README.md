@@ -131,12 +131,10 @@ start.bat            avvio rapido su Windows
 | `OPENROUTER_MODEL` | modello di default, es. `openai/gpt-4o-mini`, `anthropic/claude-3.5-haiku` (alias: `DEFAULT_MODEL`). Se impostata, il modello è **bloccato**: non è modificabile dalle impostazioni della UI |
 | `PORT` | porta del server locale (default `8765`) |
 | `DATA_DIR` | cartella dati (default: `data/` in locale, `/tmp/agentnews` su Vercel) |
-| `LLM_TIMEOUT` | timeout per singola chiamata al modello in secondi (default `90` locale, `22` su serverless) |
+| `LLM_TIMEOUT` | timeout per singola chiamata al modello in secondi (default `90` locale, `55` su serverless) |
 | `HTTP_TIMEOUT` | timeout per il fetch di ogni fonte (default `25` locale, `8` su serverless) |
 | `LLM_ATTEMPTS` | tentativi per chiamata al modello (default `2` locale, `1` su serverless) |
-| `WAIT_FOR_ALL_AGENTS` | `1` = aspetta tutti gli agenti; default `1` locale, `0` su serverless per evitare 504 |
-| `LONG_RUN_NOTICE` | soglia in secondi dopo cui scrivere nei log che l'analisi sta andando lunga quando `WAIT_FOR_ALL_AGENTS=1` (default `0` locale, `35` su serverless) |
-| `RUN_DEADLINE` | limite prudente serverless in secondi quando `WAIT_FOR_ALL_AGENTS=0`, per rispondere prima del timeout piattaforma (default `45` serverless, `0` locale) |
+| `LONG_RUN_NOTICE` | soglia in secondi dopo cui scrivere nei log che l'analisi sta andando lunga; non interrompe gli agenti (default `0` locale, `35` su serverless) |
 | `OPENROUTER_REFERER` | header `HTTP-Referer` inviato a OpenRouter (default `http://localhost:PORT`) |
 
 ---
@@ -167,13 +165,11 @@ L'app gira su Vercel come **funzioni serverless Python** (cartella `api/`) + das
   (`localStorage`), così resta visibile anche se un polling cade su un'istanza "fredda" senza dati.
 - **Timeout**: ogni analisi deve stare nel timeout della funzione (`maxDuration: 60` in `vercel.json`,
   il massimo sul piano Hobby). Per starci, su serverless l'app **scarica le fonti e interroga gli
-  agenti in parallelo** e riduce i tentativi. Per non rompere la dashboard con un 504,
-  su serverless il default e' prudente (`WAIT_FOR_ALL_AGENTS=0`): restituisce i pareri pronti
-  entro `RUN_DEADLINE`. Se vuoi aspettare tutti gli agenti perche' hai un piano con `maxDuration`
-  piu' alto, imposta `WAIT_FOR_ALL_AGENTS=1` e usa `LONG_RUN_NOTICE` per avere un avviso nei log
-  quando la run va lunga. Resta comunque valido il limite esterno della piattaforma
-  (`maxDuration` in `vercel.json`): usa **modelli veloci** (mini/flash/haiku) e **pochi agenti/asset**
-  se resti sul piano Hobby.
+  agenti in parallelo**, riduce i tentativi su serverless e, se l'analisi va lunga, scrive
+  un avviso nei log (`LONG_RUN_NOTICE`) ma continua ad attendere gli agenti gia' avviati.
+  Resta comunque valido il limite esterno della piattaforma (`maxDuration` in `vercel.json`):
+  per il massimo della resa usa **modelli veloci** (mini/flash/haiku) e **pochi agenti/asset**.
+  Su piano **Pro** puoi alzare `maxDuration` e i timeout per analisi piu' ricche.
 
 ## Note
 

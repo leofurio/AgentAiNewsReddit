@@ -27,9 +27,7 @@ import traceback
 import urllib.request
 import urllib.error
 import xml.etree.ElementTree as ET
-from concurrent.futures import (
-    ThreadPoolExecutor, as_completed, wait, FIRST_COMPLETED, TimeoutError as FuturesTimeout,
-)
+from concurrent.futures import ThreadPoolExecutor, as_completed, wait, FIRST_COMPLETED
 from datetime import datetime, timezone
 
 # Su Windows la console usa cp1252: forza UTF-8 cosi' emoji/accenti non fanno crashare.
@@ -84,20 +82,16 @@ DEFAULT_MODEL = (
 # Se il modello e' fissato via ENV, non e' modificabile dall'interfaccia.
 MODEL_LOCKED = bool(os.environ.get("OPENROUTER_MODEL") or os.environ.get("DEFAULT_MODEL"))
 
-# Su serverless bisogna evitare che la piattaforma chiuda la richiesta con 504.
-# Per default manteniamo un limite prudente; in locale, o impostando
-# WAIT_FOR_ALL_AGENTS=1, l'app aspetta tutti gli agenti fino al timeout della singola chiamata.
-LLM_TIMEOUT = int(os.environ.get("LLM_TIMEOUT", "22" if IS_SERVERLESS else "90"))
+# Su serverless esiste comunque un timeout imposto dalla piattaforma, ma l'app non
+# interrompe artificialmente gli agenti gia' avviati: se una risposta e' lenta, aggiorna
+# i log e continua ad attendere fino al limite reale della richiesta/processo.
+LLM_TIMEOUT = int(os.environ.get("LLM_TIMEOUT", "55" if IS_SERVERLESS else "90"))
 HTTP_TIMEOUT = int(os.environ.get("HTTP_TIMEOUT", "7" if IS_SERVERLESS else "25"))
 # Tentativi per chiamata: su serverless 1 (i retry con sleep allungano molto la run).
 LLM_ATTEMPTS = int(os.environ.get("LLM_ATTEMPTS", "1" if IS_SERVERLESS else "2"))
-# Modalita' di attesa: default completa in locale, prudente su serverless per non rompere la UI.
-WAIT_FOR_ALL_AGENTS = os.environ.get("WAIT_FOR_ALL_AGENTS", "0" if IS_SERVERLESS else "1") == "1"
-# Soglia informativa: superata questa durata scriviamo un messaggio nei log.
+# Soglia solo informativa: superata questa durata scriviamo un messaggio nei log,
+# ma NON cancelliamo gli agenti. 0 = nessun avviso.
 LONG_RUN_NOTICE = int(os.environ.get("LONG_RUN_NOTICE", "35" if IS_SERVERLESS else "0"))
-# Limite prudente solo per serverless quando WAIT_FOR_ALL_AGENTS=0: restituisce i pareri pronti
-# prima del timeout della piattaforma. 0 = nessun limite.
-RUN_DEADLINE = int(os.environ.get("RUN_DEADLINE", "45" if IS_SERVERLESS else "0"))
 
 DEFAULT_CONFIG = {
     "openrouter_api_key": os.environ.get("OPENROUTER_API_KEY", ""),
@@ -821,52 +815,34 @@ def do_run():
         save_state()
         log(f"Notizie rilevanti: {len(relevant)}. Interrogo {len(agents)} agenti in parallelo...")
 
-        # Gli agenti girano IN PARALLELO. In locale aspettiamo tutti. Su serverless,
-        # per default rientriamo prima del 504 della piattaforma e restituiamo i pareri
-        # gia' pronti; chi vuole attendere tutto puo' impostare WAIT_FOR_ALL_AGENTS=1
-        # e, idealmente, aumentare maxDuration sul piano Vercel adatto.
+        # Gli agenti girano IN PARALLELO, ma non vengono cancellati solo perche' la
+        # run sta durando piu' del previsto: sono chiamate pagate e vale la pena
+        # attendere la risposta. Se si supera la soglia informativa, lo segnaliamo
+        # nei log e continuiamo ad aspettare fino al completamento o al timeout reale
+        # della singola chiamata/piattaforma.
         reports = []
-        futures = {}
-        ex = ThreadPoolExecutor(max_workers=min(8, max(1, len(agents))))
-        try:
-            futures = {
+        notice_logged = False
+        with ThreadPoolExecutor(max_workers=min(8, max(1, len(agents)))) as ex:
+            pending = {
                 ex.submit(run_analyst, ag, macro_summary, relevant, config["assets"]): ag
                 for ag in agents
             }
-            if WAIT_FOR_ALL_AGENTS:
-                notice_logged = False
-                pending = dict(futures)
-                while pending:
-                    done, _ = wait(pending, timeout=1.0, return_when=FIRST_COMPLETED)
-                    if not done:
-                        if (LONG_RUN_NOTICE and not notice_logged
-                                and time.monotonic() - run_start > LONG_RUN_NOTICE):
-                            log("  ⏳ Analisi piu' lunga del previsto: attendo ancora le risposte degli agenti...")
-                            notice_logged = True
-                        continue
-                    for fut in done:
-                        ag = pending.pop(fut)
-                        try:
-                            rep = fut.result()
-                            reports.append(rep)
-                            log(f"  ✓ {rep['name']} ({rep['model']}) ha risposto.")
-                        except Exception as e:
-                            log(f"  ✗ Agente '{ag.get('name')}' errore: {e}")
-            else:
-                remaining = max(1.0, RUN_DEADLINE - (time.monotonic() - run_start)) if RUN_DEADLINE else None
-                try:
-                    for fut in as_completed(futures, timeout=remaining):
-                        ag = futures[fut]
-                        try:
-                            rep = fut.result()
-                            reports.append(rep)
-                            log(f"  ✓ {rep['name']} ({rep['model']}) ha risposto.")
-                        except Exception as e:
-                            log(f"  ✗ Agente '{ag.get('name')}' errore: {e}")
-                except FuturesTimeout:
-                    log(f"  ⏳ Analisi lunga su serverless: restituisco {len(reports)}/{len(agents)} pareri pronti prima del timeout della piattaforma.")
-        finally:
-            ex.shutdown(wait=WAIT_FOR_ALL_AGENTS, cancel_futures=False)
+            while pending:
+                done, _ = wait(pending, timeout=1.0, return_when=FIRST_COMPLETED)
+                if not done:
+                    if (LONG_RUN_NOTICE and not notice_logged
+                            and time.monotonic() - run_start > LONG_RUN_NOTICE):
+                        log("  ⏳ Analisi piu' lunga del previsto: attendo ancora le risposte degli agenti...")
+                        notice_logged = True
+                    continue
+                for fut in done:
+                    ag = pending.pop(fut)
+                    try:
+                        rep = fut.result()
+                        reports.append(rep)
+                        log(f"  ✓ {rep['name']} ({rep['model']}) ha risposto.")
+                    except Exception as e:
+                        log(f"  ✗ Agente '{ag.get('name')}' errore: {e}")
 
         consensus = aggregate(reports, config["assets"]) if reports else []
 
@@ -879,9 +855,11 @@ def do_run():
             state["last_run"] = now_iso()
             state["status"] = "ok"
             state["run_count"] += 1
+            # Se nessun agente ha risposto, e' per errori/timeout delle singole chiamate,
+            # non per un budget artificiale che ha tagliato l'attesa.
             state["last_error"] = (None if reports else
-                                   "Nessun agente ha prodotto un parere valido in tempo: "
-                                   "controlla log, modello e timeout della piattaforma.")
+                                   "Nessun agente ha prodotto un parere valido: controlla log, "
+                                   "modello e timeout della piattaforma.")
         save_state()
         if reports:
             append_history(consensus, reports)
