@@ -27,7 +27,9 @@ import traceback
 import urllib.request
 import urllib.error
 import xml.etree.ElementTree as ET
-from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError as FuturesTimeout
+from concurrent.futures import (
+    ThreadPoolExecutor, as_completed, wait, FIRST_COMPLETED, TimeoutError as FuturesTimeout,
+)
 from datetime import datetime, timezone
 
 # Su Windows la console usa cp1252: forza UTF-8 cosi' emoji/accenti non fanno crashare.
@@ -82,16 +84,20 @@ DEFAULT_MODEL = (
 # Se il modello e' fissato via ENV, non e' modificabile dall'interfaccia.
 MODEL_LOCKED = bool(os.environ.get("OPENROUTER_MODEL") or os.environ.get("DEFAULT_MODEL"))
 
-# Su serverless tutto deve stare dentro il timeout della funzione (Vercel Hobby: 60s).
-# Per starci: fetch in parallelo + agenti in parallelo + timeout/tentativi ridotti + un
-# "budget" complessivo oltre il quale restituiamo i risultati parziali gia' pronti.
-LLM_TIMEOUT = int(os.environ.get("LLM_TIMEOUT", "18" if IS_SERVERLESS else "90"))
+# Su serverless bisogna evitare che la piattaforma chiuda la richiesta con 504.
+# Per default manteniamo un limite prudente; in locale, o impostando
+# WAIT_FOR_ALL_AGENTS=1, l'app aspetta tutti gli agenti fino al timeout della singola chiamata.
+LLM_TIMEOUT = int(os.environ.get("LLM_TIMEOUT", "22" if IS_SERVERLESS else "90"))
 HTTP_TIMEOUT = int(os.environ.get("HTTP_TIMEOUT", "7" if IS_SERVERLESS else "25"))
-# Tentativi per chiamata: su serverless 1 (i retry con sleep mangiano il budget).
+# Tentativi per chiamata: su serverless 1 (i retry con sleep allungano molto la run).
 LLM_ATTEMPTS = int(os.environ.get("LLM_ATTEMPTS", "1" if IS_SERVERLESS else "2"))
-# Budget complessivo per una run, in secondi (0 = nessun limite, usato in locale).
-# Tenuto sotto i 60s del piano Hobby con margine per la risposta HTTP.
-RUN_BUDGET = int(os.environ.get("RUN_BUDGET", "45" if IS_SERVERLESS else "0"))
+# Modalita' di attesa: default completa in locale, prudente su serverless per non rompere la UI.
+WAIT_FOR_ALL_AGENTS = os.environ.get("WAIT_FOR_ALL_AGENTS", "0" if IS_SERVERLESS else "1") == "1"
+# Soglia informativa: superata questa durata scriviamo un messaggio nei log.
+LONG_RUN_NOTICE = int(os.environ.get("LONG_RUN_NOTICE", "35" if IS_SERVERLESS else "0"))
+# Limite prudente solo per serverless quando WAIT_FOR_ALL_AGENTS=0: restituisce i pareri pronti
+# prima del timeout della piattaforma. 0 = nessun limite.
+RUN_DEADLINE = int(os.environ.get("RUN_DEADLINE", "45" if IS_SERVERLESS else "0"))
 
 DEFAULT_CONFIG = {
     "openrouter_api_key": os.environ.get("OPENROUTER_API_KEY", ""),
@@ -802,7 +808,7 @@ def do_run():
         news = fetch_news()
         log(f"Totale {len(news)} titoli (deduplicati). Estrazione notizie rilevanti...")
         # Persisto subito le news: cosi' restano visibili anche se gli agenti
-        # non fanno in tempo a rispondere dentro il budget (Vercel).
+        # sono ancora in corso o se la piattaforma interrompe la richiesta.
         with _lock:
             state["news"] = news
         save_state()
@@ -815,30 +821,52 @@ def do_run():
         save_state()
         log(f"Notizie rilevanti: {len(relevant)}. Interrogo {len(agents)} agenti in parallelo...")
 
-        # Gli agenti girano IN PARALLELO e con un budget di tempo complessivo: se la
-        # funzione e' vicina al timeout (Vercel), restituiamo i pareri gia' pronti.
+        # Gli agenti girano IN PARALLELO. In locale aspettiamo tutti. Su serverless,
+        # per default rientriamo prima del 504 della piattaforma e restituiamo i pareri
+        # gia' pronti; chi vuole attendere tutto puo' impostare WAIT_FOR_ALL_AGENTS=1
+        # e, idealmente, aumentare maxDuration sul piano Vercel adatto.
         reports = []
+        futures = {}
         ex = ThreadPoolExecutor(max_workers=min(8, max(1, len(agents))))
-        futures = {
-            ex.submit(run_analyst, ag, macro_summary, relevant, config["assets"]): ag
-            for ag in agents
-        }
-        remaining = None
-        if RUN_BUDGET:
-            remaining = max(1.0, RUN_BUDGET - (time.monotonic() - run_start))
         try:
-            for fut in as_completed(futures, timeout=remaining):
-                ag = futures[fut]
+            futures = {
+                ex.submit(run_analyst, ag, macro_summary, relevant, config["assets"]): ag
+                for ag in agents
+            }
+            if WAIT_FOR_ALL_AGENTS:
+                notice_logged = False
+                pending = dict(futures)
+                while pending:
+                    done, _ = wait(pending, timeout=1.0, return_when=FIRST_COMPLETED)
+                    if not done:
+                        if (LONG_RUN_NOTICE and not notice_logged
+                                and time.monotonic() - run_start > LONG_RUN_NOTICE):
+                            log("  ⏳ Analisi piu' lunga del previsto: attendo ancora le risposte degli agenti...")
+                            notice_logged = True
+                        continue
+                    for fut in done:
+                        ag = pending.pop(fut)
+                        try:
+                            rep = fut.result()
+                            reports.append(rep)
+                            log(f"  ✓ {rep['name']} ({rep['model']}) ha risposto.")
+                        except Exception as e:
+                            log(f"  ✗ Agente '{ag.get('name')}' errore: {e}")
+            else:
+                remaining = max(1.0, RUN_DEADLINE - (time.monotonic() - run_start)) if RUN_DEADLINE else None
                 try:
-                    rep = fut.result()
-                    reports.append(rep)
-                    log(f"  ✓ {rep['name']} ({rep['model']}) ha risposto.")
-                except Exception as e:
-                    log(f"  ✗ Agente '{ag.get('name')}' errore: {e}")
-        except FuturesTimeout:
-            log(f"  ⏱ Budget tempo esaurito: raccolti {len(reports)}/{len(agents)} pareri in tempo.")
-        # non blocchiamo la risposta aspettando gli agenti rimasti indietro
-        ex.shutdown(wait=False, cancel_futures=True)
+                    for fut in as_completed(futures, timeout=remaining):
+                        ag = futures[fut]
+                        try:
+                            rep = fut.result()
+                            reports.append(rep)
+                            log(f"  ✓ {rep['name']} ({rep['model']}) ha risposto.")
+                        except Exception as e:
+                            log(f"  ✗ Agente '{ag.get('name')}' errore: {e}")
+                except FuturesTimeout:
+                    log(f"  ⏳ Analisi lunga su serverless: restituisco {len(reports)}/{len(agents)} pareri pronti prima del timeout della piattaforma.")
+        finally:
+            ex.shutdown(wait=WAIT_FOR_ALL_AGENTS, cancel_futures=False)
 
         consensus = aggregate(reports, config["assets"]) if reports else []
 
@@ -851,16 +879,14 @@ def do_run():
             state["last_run"] = now_iso()
             state["status"] = "ok"
             state["run_count"] += 1
-            # Niente pareri in tempo: mostriamo comunque news e contesto, con un avviso.
             state["last_error"] = (None if reports else
-                                   "Nessun agente ha risposto entro il limite di tempo: "
-                                   "mostro solo news e contesto. Usa un modello piu' veloce "
-                                   "o riduci agenti/asset.")
+                                   "Nessun agente ha prodotto un parere valido in tempo: "
+                                   "controlla log, modello e timeout della piattaforma.")
         save_state()
         if reports:
             append_history(consensus, reports)
         log("Analisi completata." if reports else
-            "Analisi completata senza pareri (timeout agenti): news e contesto disponibili.")
+            "Analisi completata senza pareri validi: news e contesto disponibili.")
     except Exception as e:
         log(f"Errore analisi: {e}")
         traceback.print_exc()

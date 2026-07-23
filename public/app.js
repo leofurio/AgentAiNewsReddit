@@ -21,6 +21,7 @@ const DIRLABEL = { up: "RIALZO", down: "RIBASSO", neutral: "NEUTRO" };
 const BIAS_LABEL = { up: "RISK-ON", down: "RISK-OFF", neutral: "MISTO" };
 
 let intervalMin = 5;
+const openBreakdowns = new Set();
 
 // Su serverless (Vercel) ogni richiesta può colpire un'istanza diversa: il polling di
 // /api/state può cadere su un'istanza "fredda" senza dati in /tmp e restituire uno stato
@@ -120,16 +121,22 @@ function renderHero(items, lastRun, status) {
   $("segDown").style.width = pct(down) + "%";
 }
 
+function breakdownKey(c, i) {
+  return `${c.asset || "asset"}::${i}`;
+}
+
 function renderConsensus(items) {
   const grid = $("consensusGrid");
   $("consensusEmpty").classList.toggle("hidden", items.length > 0);
   $("assetCount").textContent = items.length ? items.length + " asset" : "";
   grid.innerHTML = items.map((c, i) => {
     const d = c.direction;
+    const key = breakdownKey(c, i);
+    const isOpen = openBreakdowns.has(key);
     const bd = (c.breakdown || []).map(b =>
       `<div class="bd"><b>${esc(b.agent)}</b> · <span class="dirlabel ${b.direction}">${DIRLABEL[b.direction]}</span> (${b.confidence}%)<br><span class="muted">${esc(b.rationale)}</span></div>`
     ).join("");
-    return `<div class="card ${d}" id="card${i}">
+    return `<div class="card ${d}${isOpen ? " open" : ""}" id="card${i}">
       <div class="card-top">
         <span class="asset">${esc(c.asset)}</span>
         <span class="arrow ${d}">${ARROW[d]}</span>
@@ -142,15 +149,17 @@ function renderConsensus(items) {
         <span class="vd">▼ ${c.votes_down||0}</span>
         <span class="vn">▬ ${c.votes_neutral||0}</span>
       </div>
-      ${bd ? `<span class="toggle-bd" data-i="${i}">▸ dettaglio agenti</span><div class="breakdown">${bd}</div>` : ""}
+      ${bd ? `<span class="toggle-bd" data-i="${i}" data-key="${esc(key)}">${isOpen ? "▾ nascondi dettaglio" : "▸ dettaglio agenti"}</span><div class="breakdown">${bd}</div>` : ""}
     </div>`;
   }).join("");
 
   grid.querySelectorAll(".toggle-bd").forEach(el => {
     el.addEventListener("click", () => {
       const card = $("card" + el.dataset.i);
-      card.classList.toggle("open");
-      el.textContent = card.classList.contains("open") ? "▾ nascondi dettaglio" : "▸ dettaglio agenti";
+      const isOpen = card.classList.toggle("open");
+      if (isOpen) openBreakdowns.add(el.dataset.key);
+      else openBreakdowns.delete(el.dataset.key);
+      el.textContent = isOpen ? "▾ nascondi dettaglio" : "▸ dettaglio agenti";
     });
   });
 }
